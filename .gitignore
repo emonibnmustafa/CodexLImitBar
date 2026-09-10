@@ -1,0 +1,18 @@
+# Build Artifacts
+build/
+*.app/
+*.dSYM/
+*.o
+
+# macOS System Files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# User / Local Secrets (never commit session data!)
+auth.json
+*.key
+*.pem
