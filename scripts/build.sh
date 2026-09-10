@@ -2,7 +2,7 @@
 set -e
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="ChatGPTLimitsBar"
+APP_NAME="CodexLImitBar"
 BUILD_DIR="$REPO_DIR/build"
 BUNDLE_DIR="$BUILD_DIR/$APP_NAME.app"
 MACOS_DIR="$BUNDLE_DIR/Contents/MacOS"

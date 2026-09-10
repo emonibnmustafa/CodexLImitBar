@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡️ ChatGPT Limits Bar for macOS
+# ⚡️ CodexLImitBar for macOS
 
 **A native, ultra-lightweight macOS menu bar app that displays your ChatGPT 5-Hour rolling window and Weekly usage limits in real-time.**
 
@@ -59,7 +59,7 @@
   │ Refresh Interval                                       > │
   │ ✓ Launch at Login                                        │
   ├──────────────────────────────────────────────────────────┤
-  │ Quit ChatGPTLimitsBar                                 ⌘Q │
+  │ Quit CodexLImitBar                                 ⌘Q │
   └──────────────────────────────────────────────────────────┘
 ```
 
@@ -81,14 +81,14 @@ Open Terminal and run:
 
 ```bash
 # 1. Clone this repository
-git clone https://github.com/emonibnmustafa/GPTLImitBar.git
-cd GPTLImitBar
+git clone https://github.com/emonibnmustafa/CodexLImitBar.git
+cd CodexLImitBar
 
 # 2. Build and install
 ./scripts/install.sh
 ```
 
-The script compiles the native Swift application, places `ChatGPTLimitsBar.app` in `~/Applications`, sets up auto-launch at login, and starts the app immediately.
+The script compiles the native Swift application, places `CodexLImitBar.app` in `~/Applications`, sets up auto-launch at login, and starts the app immediately.
 
 ---
 
@@ -96,7 +96,7 @@ The script compiles the native Swift application, places `ChatGPTLimitsBar.app` 
 
 ```bash
 ./scripts/build.sh
-open build/ChatGPTLimitsBar.app
+open build/CodexLImitBar.app
 ```
 
 ---
@@ -132,15 +132,15 @@ Click the menu bar text (`5HL=... We=...`) to open the dropdown menu:
 To remove the app completely from your Mac:
 
 ```bash
-cd GPTLImitBar
+cd CodexLImitBar
 ./scripts/uninstall.sh
 ```
 
 Or manually:
 ```bash
-killall ChatGPTLimitsBar
-rm -rf ~/Applications/ChatGPTLimitsBar.app
-rm -f ~/Library/LaunchAgents/com.gptlimitbar.menubar.plist
+killall CodexLImitBar
+rm -rf ~/Applications/CodexLImitBar.app
+rm -f ~/Library/LaunchAgents/com.codexlimitbar.menubar.plist
 ```
 
 ---

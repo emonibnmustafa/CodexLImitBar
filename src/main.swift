@@ -327,7 +327,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var currentData: RateLimitData?
-    private let launchAgentIdentifier = "com.gptlimitbar.menubar"
+    private let launchAgentIdentifier = "com.codexlimitbar.menubar"
 
     // User preferences
     private var currentInterval: TimeInterval {
@@ -393,7 +393,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.updateTitle()
                     self.buildMenu(loading: false)
                 case .failure(let error):
-                    NSLog("ChatGPTLimitsBar refresh error: \(error.localizedDescription)")
+                    NSLog("CodexLImitBar refresh error: \(error.localizedDescription)")
                     if self.currentData == nil, let button = self.statusItem.button {
                         button.title = "5HL=?  We=?"
                     }
@@ -567,7 +567,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let quitItem = NSMenuItem(title: "Quit ChatGPTLimitsBar", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit CodexLImitBar", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -610,7 +610,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if isLaunchAtLoginEnabled() {
             try? fileManager.removeItem(at: plistURL)
         } else {
-            let appPath = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ChatGPTLimitsBar").path
+            let appPath = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/CodexLImitBar").path
             let dict: [String: Any] = [
                 "Label": launchAgentIdentifier,
                 "ProgramArguments": [appPath],

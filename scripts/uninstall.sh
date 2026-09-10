@@ -1,26 +1,31 @@
 #!/bin/bash
 set -e
 
-APP_NAME="ChatGPTLimitsBar"
+APP_NAME="CodexLImitBar"
 DEST_APP="$HOME/Applications/$APP_NAME.app"
-PLIST_FILE="$HOME/Library/LaunchAgents/com.gptlimitbar.menubar.plist"
+PLIST_FILE="$HOME/Library/LaunchAgents/com.codexlimitbar.menubar.plist"
 
 echo "🗑 Uninstalling $APP_NAME..."
 
 # 1. Terminate running process
 killall "$APP_NAME" 2>/dev/null || true
+killall "ChatGPTLimitsBar" 2>/dev/null || true
 
-# 2. Remove LaunchAgent
-if [ -f "$PLIST_FILE" ]; then
-    launchctl unload "$PLIST_FILE" 2>/dev/null || true
-    rm -f "$PLIST_FILE"
-    echo "Removed LaunchAgent: $PLIST_FILE"
-fi
+# 2. Remove LaunchAgents (current and legacy)
+for p in "$PLIST_FILE" "$HOME/Library/LaunchAgents/com.emon.chatgptlimitsbar.plist" "$HOME/Library/LaunchAgents/com.gptlimitbar.menubar.plist"; do
+    if [ -f "$p" ]; then
+        launchctl unload "$p" 2>/dev/null || true
+        rm -f "$p"
+        echo "Removed LaunchAgent: $p"
+    fi
+done
 
-# 3. Remove application bundle
-if [ -d "$DEST_APP" ]; then
-    rm -rf "$DEST_APP"
-    echo "Removed application: $DEST_APP"
-fi
+# 3. Remove application bundles
+for app in "$DEST_APP" "$HOME/Applications/ChatGPTLimitsBar.app"; do
+    if [ -d "$app" ]; then
+        rm -rf "$app"
+        echo "Removed application: $app"
+    fi
+done
 
 echo "✅ $APP_NAME has been completely uninstalled."
