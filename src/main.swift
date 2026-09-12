@@ -330,8 +330,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let launchAgentIdentifier = "com.codexlimitbar.menubar"
 
     // Warning state tracking
-    private var hasShown5PercentPopup = false
-    private var lastWarningLevel: Int = -1  // tracks last known fiveHPercentLeft to detect transitions
+    // 5h: alert at every 10% drop (90, 80, 70, 60, 50, 40, 30, 20, 10)
+    private var shown5hThresholds: Set<Int> = []
+    // Weekly: alert at 70%, 50%, 30%, 10%
+    private var shownWeeklyThresholds: Set<Int> = []
+    // Track previous values for detecting crossings
+    private var prev5hLeft: Int = 100
+    private var prevWeeklyLeft: Int = 100
 
     // User preferences
     private var currentInterval: TimeInterval {
@@ -409,30 +414,82 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func checkWarningThresholds(_ data: RateLimitData) {
-        let pctLeft = data.fiveHPercentLeft
+        let fiveH = data.fiveHPercentLeft
+        let weekly = data.weeklyPercentLeft
 
-        // Reset popup flag when limit goes back above 10% (after a reset cycle)
-        if pctLeft > 10 || pctLeft == 0 {
-            hasShown5PercentPopup = false
+        // --- 5h thresholds: popup at every 10% drop (90, 80, 70, 60, 50, 40, 30, 20, 10) ---
+        // Reset all shown thresholds when limit recovers above 95% (after a reset cycle)
+        if fiveH > 95 {
+            shown5hThresholds.removeAll()
         }
 
-        // Show popup at ≤5% (only once per cycle)
-        if pctLeft >= 1 && pctLeft <= 5 && !hasShown5PercentPopup {
-            hasShown5PercentPopup = true
-            showLowLimitPopup(pctLeft: pctLeft)
+        let fiveHCheckpoints = [90, 80, 70, 60, 50, 40, 30, 20, 10]
+        for threshold in fiveHCheckpoints {
+            // Crossed below this threshold (was above, now at or below)
+            if fiveH <= threshold && prev5hLeft > threshold && !shown5hThresholds.contains(threshold) {
+                shown5hThresholds.insert(threshold)
+                let severity: PopupSeverity = threshold <= 10 ? .critical : (threshold <= 30 ? .warning : .info)
+                showWarningPopup(
+                    category: "5-Hour",
+                    pctLeft: fiveH,
+                    threshold: threshold,
+                    severity: severity
+                )
+                break  // only show one popup per refresh cycle
+            }
         }
 
-        lastWarningLevel = pctLeft
+        // --- Weekly thresholds: popup at 70%, 50%, 30%, 10% ---
+        if weekly > 95 {
+            shownWeeklyThresholds.removeAll()
+        }
+
+        let weeklyCheckpoints = [70, 50, 30, 10]
+        for threshold in weeklyCheckpoints {
+            if weekly <= threshold && prevWeeklyLeft > threshold && !shownWeeklyThresholds.contains(threshold) {
+                shownWeeklyThresholds.insert(threshold)
+                let severity: PopupSeverity = threshold <= 10 ? .critical : (threshold <= 30 ? .warning : .info)
+                // Delay weekly popup slightly if a 5h popup was just shown
+                let delay: TimeInterval = shown5hThresholds.count > 0 ? 1.5 : 0.0
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.showWarningPopup(
+                        category: "Weekly",
+                        pctLeft: weekly,
+                        threshold: threshold,
+                        severity: severity
+                    )
+                }
+                break
+            }
+        }
+
+        prev5hLeft = fiveH
+        prevWeeklyLeft = weekly
     }
 
-    private func showLowLimitPopup(pctLeft: Int) {
-        let alert = NSAlert()
-        alert.messageText = "⚠️ CodexLImitBar Warning"
-        alert.informativeText = "Your 5-hour ChatGPT limit is critically low!\n\nOnly \(pctLeft)% remaining.\n\nConsider slowing down usage to avoid hitting the limit."
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Got it")
+    private enum PopupSeverity {
+        case info, warning, critical
+    }
 
-        // Bring the alert to front so it's visible even over other apps
+    private func showWarningPopup(category: String, pctLeft: Int, threshold: Int, severity: PopupSeverity) {
+        let alert = NSAlert()
+
+        switch severity {
+        case .critical:
+            alert.messageText = "🔴 CodexLImitBar CRITICAL"
+            alert.informativeText = "\(category) limit is critically low!\n\nOnly \(pctLeft)% remaining (crossed \(threshold)% threshold).\n\n⚠️ Slow down or risk hitting the limit!"
+            alert.alertStyle = .critical
+        case .warning:
+            alert.messageText = "⚠️ CodexLImitBar Warning"
+            alert.informativeText = "\(category) limit is getting low.\n\n\(pctLeft)% remaining (crossed \(threshold)% threshold).\n\nConsider pacing your usage."
+            alert.alertStyle = .warning
+        case .info:
+            alert.messageText = "ℹ️ CodexLImitBar Notice"
+            alert.informativeText = "\(category) limit update: \(pctLeft)% remaining.\n\nCrossed the \(threshold)% threshold."
+            alert.alertStyle = .informational
+        }
+
+        alert.addButton(withTitle: "Got it")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
@@ -450,18 +507,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let resetStr = showResetTimeInBar ? formatShortResetTime(data.fiveHResetAt) : nil
         let titleText = currentStyle.format(fiveH: data.fiveHPercentLeft, weekly: data.weeklyPercentLeft, resetTime: resetStr)
 
-        let pctLeft = data.fiveHPercentLeft
+        let fiveHDanger = data.fiveHPercentLeft >= 1 && data.fiveHPercentLeft <= 10
+        let weeklyDanger = data.weeklyPercentLeft >= 1 && data.weeklyPercentLeft <= 10
 
-        if pctLeft >= 1 && pctLeft <= 10 {
-            // RED warning mode: 1% to 10% remaining
+        if fiveHDanger || weeklyDanger {
+            // Build prefix indicators
+            var prefix = ""
+            if fiveHDanger && weeklyDanger {
+                prefix = "🔴🔴 "
+            } else if fiveHDanger {
+                prefix = "🔴 "
+            } else {
+                prefix = "⚠️ "  // weekly-only danger
+            }
+
             let attrs: [NSAttributedString.Key: Any] = [
                 .foregroundColor: NSColor.red,
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
             ]
-            button.attributedTitle = NSAttributedString(string: "🔴 \(titleText)", attributes: attrs)
+            button.attributedTitle = NSAttributedString(string: "\(prefix)\(titleText)", attributes: attrs)
         } else {
-            // Normal mode: 0% (fully reset) or >10%
-            button.attributedTitle = NSAttributedString(string: "")  // clear attributed
+            // Normal mode
+            button.attributedTitle = NSAttributedString(string: "")
             button.title = titleText
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         }
