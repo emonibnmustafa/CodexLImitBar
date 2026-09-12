@@ -74,21 +74,25 @@ enum DisplayStyle: String, CaseIterable {
     }
 
     func format(fiveH: Int, weekly: Int, resetTime: String?, ctx: Int? = nil) -> String {
+        let p = formatParts(fiveH: fiveH, weekly: weekly, resetTime: resetTime, ctx: ctx)
+        return "\(p.fiveHPart)\(p.separator1)\(p.weeklyPart)\(p.ctxPart)"
+    }
+
+    func formatParts(fiveH: Int, weekly: Int, resetTime: String?, ctx: Int? = nil) -> (fiveHPart: String, separator1: String, weeklyPart: String, ctxPart: String) {
         let resetPart = (resetTime != nil && !resetTime!.isEmpty) ? " (\(resetTime!))" : ""
-        let ctxPart: String
         switch self {
         case .standard:
-            ctxPart = ctx != nil ? "  Ctx=\(ctx!)%" : ""
-            return "5HL=\(fiveH)%\(resetPart)  We=\(weekly)%\(ctxPart)"
+            let ctx = ctx != nil ? "  Ctx=\(ctx!)%" : ""
+            return ("5HL=\(fiveH)%\(resetPart)", "  ", "We=\(weekly)%", ctx)
         case .compact:
-            ctxPart = ctx != nil ? " | C: \(ctx!)%" : ""
-            return "5h: \(fiveH)%\(resetPart) | W: \(weekly)%\(ctxPart)"
+            let ctx = ctx != nil ? " | C: \(ctx!)%" : ""
+            return ("5h: \(fiveH)%\(resetPart)", " | ", "W: \(weekly)%", ctx)
         case .emoji:
-            ctxPart = ctx != nil ? " | 🧠 \(ctx!)%" : ""
-            return "⏱ \(fiveH)%\(resetPart) | 📅 \(weekly)%\(ctxPart)"
+            let ctx = ctx != nil ? " | 🧠 \(ctx!)%" : ""
+            return ("⏱ \(fiveH)%\(resetPart)", " | ", "📅 \(weekly)%", ctx)
         case .minimal:
-            ctxPart = ctx != nil ? " / \(ctx!)%" : ""
-            return "\(fiveH)%\(resetPart) / \(weekly)%\(ctxPart)"
+            let ctx = ctx != nil ? " / \(ctx!)%" : ""
+            return ("\(fiveH)%\(resetPart)", " / ", "\(weekly)%", ctx)
         }
     }
 }
@@ -425,9 +429,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let launchAgentIdentifier = "com.codexlimitbar.menubar"
 
     // Warning state tracking
-    // 5h: alert at every 10% drop (90, 80, 70, 60, 50, 40, 30, 20, 10)
+    // 5h: alert at 50%, 20%, and 10% (red alert zone)
     private var shown5hThresholds: Set<Int> = []
-    // Weekly: alert at 70%, 50%, 30%, 10%
+    // Weekly: alert at 50%, 30%, and 10% (red alert zone)
     private var shownWeeklyThresholds: Set<Int> = []
     // Track previous values for detecting crossings
     private var prev5hLeft: Int = 100
@@ -535,18 +539,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fiveH = data.fiveHPercentLeft
         let weekly = data.weeklyPercentLeft
 
-        // --- 5h thresholds: popup at every 10% drop (90, 80, 70, 60, 50, 40, 30, 20, 10) ---
-        // Reset all shown thresholds when limit recovers above 95% (after a reset cycle)
-        if fiveH > 95 {
+        // --- 5h thresholds: popup at 50%, 20%, and 10% (red alert zone) ---
+        // Reset all shown thresholds when limit recovers above 55%
+        if fiveH > 55 {
             shown5hThresholds.removeAll()
         }
 
-        let fiveHCheckpoints = [90, 80, 70, 60, 50, 40, 30, 20, 10]
+        let fiveHCheckpoints = [50, 20, 10]
         for threshold in fiveHCheckpoints {
             // Crossed below this threshold (was above, now at or below)
             if fiveH <= threshold && prev5hLeft > threshold && !shown5hThresholds.contains(threshold) {
                 shown5hThresholds.insert(threshold)
-                let severity: PopupSeverity = threshold <= 10 ? .critical : (threshold <= 30 ? .warning : .info)
+                let severity: PopupSeverity = threshold <= 10 ? .critical : (threshold <= 20 ? .warning : .info)
                 showWarningPopup(
                     category: "5-Hour",
                     pctLeft: fiveH,
@@ -557,16 +561,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // --- Weekly thresholds: popup at 70%, 50%, 30%, 10% ---
-        if weekly > 95 {
+        // --- Weekly thresholds: popup at 50%, 30%, and 10% (red alert zone) ---
+        // Reset all shown thresholds when limit recovers above 55%
+        if weekly > 55 {
             shownWeeklyThresholds.removeAll()
         }
 
-        let weeklyCheckpoints = [70, 50, 30, 10]
+        let weeklyCheckpoints = [50, 30, 10]
         for threshold in weeklyCheckpoints {
             if weekly <= threshold && prevWeeklyLeft > threshold && !shownWeeklyThresholds.contains(threshold) {
                 shownWeeklyThresholds.insert(threshold)
-                let severity: PopupSeverity = threshold <= 10 ? .critical : (threshold <= 30 ? .warning : .info)
+                let severity: PopupSeverity = threshold <= 10 ? .critical : .warning
                 // Delay weekly popup slightly if a 5h popup was just shown
                 let delay: TimeInterval = shown5hThresholds.count > 0 ? 1.5 : 0.0
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -624,33 +629,69 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let data = currentData, let button = statusItem.button else { return }
         let resetStr = showResetTimeInBar ? formatShortResetTime(data.fiveHResetAt) : nil
         let ctxVal = showContextWindowInBar ? currentContextData?.percentFull : nil
-        let titleText = currentStyle.format(fiveH: data.fiveHPercentLeft, weekly: data.weeklyPercentLeft, resetTime: resetStr, ctx: ctxVal)
 
         let fiveHDanger = data.fiveHPercentLeft >= 1 && data.fiveHPercentLeft <= 10
         let weeklyDanger = data.weeklyPercentLeft >= 1 && data.weeklyPercentLeft <= 10
 
-        if fiveHDanger || weeklyDanger {
-            // Build prefix indicators
-            var prefix = ""
-            if fiveHDanger && weeklyDanger {
-                prefix = "🔴🔴 "
-            } else if fiveHDanger {
-                prefix = "🔴 "
-            } else {
-                prefix = "⚠️ "  // weekly-only danger
-            }
+        let parts = currentStyle.formatParts(
+            fiveH: data.fiveHPercentLeft,
+            weekly: data.weeklyPercentLeft,
+            resetTime: resetStr,
+            ctx: ctxVal
+        )
 
-            let attrs: [NSAttributedString.Key: Any] = [
-                .foregroundColor: NSColor.red,
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
-            ]
-            button.attributedTitle = NSAttributedString(string: "\(prefix)\(titleText)", attributes: attrs)
-        } else {
-            // Normal mode
+        let normalFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
+
+        if !fiveHDanger && !weeklyDanger {
+            // Both normal
             button.attributedTitle = NSAttributedString(string: "")
-            button.title = titleText
-            button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            button.title = "\(parts.fiveHPart)\(parts.separator1)\(parts.weeklyPart)\(parts.ctxPart)"
+            button.font = normalFont
+            return
         }
+
+        // At least one metric is in red zone (1-10% remaining)
+        // Color each component INDEPENDENTLY so one red zone does not turn the other metric red
+        let result = NSMutableAttributedString()
+
+        // 5-Hour portion
+        if fiveHDanger {
+            let fiveHAttrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: NSColor.red,
+                .font: boldFont
+            ]
+            result.append(NSAttributedString(string: "🔴 \(parts.fiveHPart)", attributes: fiveHAttrs))
+        } else {
+            let normalAttrs: [NSAttributedString.Key: Any] = [
+                .font: normalFont
+            ]
+            result.append(NSAttributedString(string: parts.fiveHPart, attributes: normalAttrs))
+        }
+
+        // Separator between 5h and weekly
+        result.append(NSAttributedString(string: parts.separator1, attributes: [.font: normalFont]))
+
+        // Weekly portion
+        if weeklyDanger {
+            let weeklyAttrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: NSColor.red,
+                .font: boldFont
+            ]
+            result.append(NSAttributedString(string: "🔴 \(parts.weeklyPart)", attributes: weeklyAttrs))
+        } else {
+            let normalAttrs: [NSAttributedString.Key: Any] = [
+                .font: normalFont
+            ]
+            result.append(NSAttributedString(string: parts.weeklyPart, attributes: normalAttrs))
+        }
+
+        // Context Window portion (if visible)
+        if !parts.ctxPart.isEmpty {
+            result.append(NSAttributedString(string: parts.ctxPart, attributes: [.font: normalFont]))
+        }
+
+        button.attributedTitle = result
     }
 
     private func maskEmail(_ email: String) -> String {

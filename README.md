@@ -26,10 +26,12 @@
 - **⚡️ Real-Time Rate Limit Monitoring**: See your **5-hour rolling limit** and **weekly limit** directly in your menu bar (`5HL=85% (4:30 PM)  We=90%`).
 - **🧠 Active Chat Context Window Tracking**: Displays the current conversation's context window usage percentage (`Ctx=30%`) in real-time, extracted directly from local Codex session rollout logs with exact input token counts and total model headroom.
 - **🚨 Smart Threshold Popups & Notifications**:
-  - **5-Hour Limit**: Screen popup reminder at every 10% drop (90%, 80%, 70%, 60%, 50%, 40%, 30%, 20%, 10%).
-  - **Weekly Limit**: Warning popups on the screen when reaching **70%**, **50%**, **30%**, and **10%**.
-- **🔴 Red Zone Visual Alert**:
-  - Whenever the 5-hour limit or weekly limit drops to **10% or less**, the menu bar turns into an eye-catching **bold red alert** (`🔴` or `⚠️`), returning to normal when reset or above 10%.
+  - **5-Hour Limit**: Screen popup reminders trigger when reaching **50%**, **20%**, and **10%** (critical alert zone).
+  - **Weekly Limit**: Warning popups trigger when reaching **50%**, **30%**, and **10%** (critical alert zone).
+- **🔴 Independent Red Zone Visual Alerts**:
+  - Whenever the 5-hour limit drops to **10% or less**, only the 5h section displays in bold red (`🔴 5HL=10%`), leaving the weekly section in standard color.
+  - Whenever the weekly limit drops to **10% or less**, only the weekly section turns bold red (`🔴 We=10%`), leaving the 5h section unaffected.
+  - If both enter the red zone simultaneously, both metrics are highlighted with their own individual red alert indicators. Reverts cleanly to standard styling once usage recovers.
 - **⏱ Live Countdown Timers**: View exact timestamps and ticking countdowns until limit resets.
 - **🎨 Customizable Display Styles**:
   - `Standard`: `5HL=85% (4:30 PM)  We=90%  Ctx=30%` (Default)
