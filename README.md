@@ -13,7 +13,7 @@
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ macOS Menu Bar: [ 5HL=85% (4:30 PM)  We=90% ]                │
+│ macOS Menu Bar: [ 5HL=85% (4:30 PM)  We=90%  Ctx=30% ]       │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -23,18 +23,24 @@
 
 ## 🌟 Features
 
-- **⚡️ Real-Time Monitoring**: See both your **5-hour rolling limit** and **weekly limit** directly in your menu bar (`5HL=85% (4:30 PM)  We=90%`).
-- **⏱ Live Countdown Timers**: Click the menu item to see the exact time and live ticking countdown until your limits reset.
+- **⚡️ Real-Time Rate Limit Monitoring**: See your **5-hour rolling limit** and **weekly limit** directly in your menu bar (`5HL=85% (4:30 PM)  We=90%`).
+- **🧠 Active Chat Context Window Tracking**: Displays the current conversation's context window usage percentage (`Ctx=30%`) in real-time, extracted directly from local Codex session rollout logs with exact input token counts and total model headroom.
+- **🚨 Smart Threshold Popups & Notifications**:
+  - **5-Hour Limit**: Screen popup reminder at every 10% drop (90%, 80%, 70%, 60%, 50%, 40%, 30%, 20%, 10%).
+  - **Weekly Limit**: Warning popups on the screen when reaching **70%**, **50%**, **30%**, and **10%**.
+- **🔴 Red Zone Visual Alert**:
+  - Whenever the 5-hour limit or weekly limit drops to **10% or less**, the menu bar turns into an eye-catching **bold red alert** (`🔴` or `⚠️`), returning to normal when reset or above 10%.
+- **⏱ Live Countdown Timers**: View exact timestamps and ticking countdowns until limit resets.
 - **🎨 Customizable Display Styles**:
-  - `Standard`: `5HL=85% (4:30 PM)  We=90%` (Default)
-  - `Compact`: `5h: 85% (4:30 PM) | W: 90%`
-  - `Emoji`: `⏱ 85% (4:30 PM) | 📅 90%`
-  - `Minimal`: `85% (4:30 PM) / 90%`
-- **🔄 Configurable Refresh Intervals**: Choose between **5 seconds** (Real-time), 15s, 30s, or 60s directly from the dropdown.
-- **🛡 Privacy-First & 100% Local**: No external analytics, no third-party servers, no proxy. Credentials never leave your machine.
-- **🪶 Ultra Lightweight**: Native Swift & AppKit binary. Consumes **0.0% CPU** at idle and negligible memory.
-- **🚀 Zero Dock Footprint**: Configured with `LSUIElement` so it lives quietly in your menu bar without cluttering your Dock or `⌘-Tab` switcher.
-- **⚙️ Launch at Login**: Built-in 1-click toggle to automatically start whenever you log into macOS.
+  - `Standard`: `5HL=85% (4:30 PM)  We=90%  Ctx=30%` (Default)
+  - `Compact`: `5h: 85% (4:30 PM) | W: 90% | C: 30%`
+  - `Emoji`: `⏱ 85% (4:30 PM) | 📅 90% | 🧠 30%`
+  - `Minimal`: `85% (4:30 PM) / 90% / 30%`
+- **🔄 Configurable Refresh Intervals**: 5 seconds (Real-time), 15s, 30s, or 60s.
+- **🛡 Privacy-First & 100% Local**: No telemetry, no external servers, no proxy.
+- **🪶 Ultra Lightweight**: Native Swift & AppKit binary. Negligible CPU and memory footprint.
+- **🚀 Zero Dock Footprint**: Configured with `LSUIElement` to run exclusively in the menu bar.
+- **⚙️ Launch at Login**: Built-in 1-click toggle to automatically start on login.
 
 ---
 
@@ -51,10 +57,14 @@
   │ 📅  Weekly Limit: 90% left (10% used)                     │
   │      Resets: Friday, 10:00 AM (in 4d 12h)                │
   ├──────────────────────────────────────────────────────────┤
+  │ 🧠  Context Window: 30% full (76,000 / 258,400 tokens)   │
+  │      Session: ...3d203d97 • 70% headroom                 │
+  ├──────────────────────────────────────────────────────────┤
   │ Synced: 2:15:40 PM (every 5s)                            │
   ├──────────────────────────────────────────────────────────┤
   │ 🔄  Refresh Now                                       ⌘R │
   │ ✓ Show 5h Reset Time in Bar                              │
+  │ ✓ Show Context Window % in Bar                           │
   │ Display Style                                          > │
   │ Refresh Interval                                       > │
   │ ✓ Launch at Login                                        │

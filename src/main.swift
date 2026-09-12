@@ -47,6 +47,15 @@ struct RateLimitData {
     let lastUpdated: Date
 }
 
+struct ContextWindowData {
+    let inputTokens: Int
+    let totalTokens: Int
+    let modelContextWindow: Int
+    let percentFull: Int          // 0-100
+    let sessionId: String
+    let lastUpdated: Date
+}
+
 // MARK: - Display Styles
 
 enum DisplayStyle: String, CaseIterable {
@@ -57,24 +66,29 @@ enum DisplayStyle: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .standard: return "Standard (5HL=85% (4:30 PM)  We=90%)"
-        case .compact:  return "Compact (5h: 85% (4:30 PM) | W: 90%)"
-        case .emoji:    return "Emoji (⏱ 85% (4:30 PM) | 📅 90%)"
-        case .minimal:  return "Minimal (85% (4:30 PM) / 90%)"
+        case .standard: return "Standard (5HL=85% (4:30 PM)  We=90%  Ctx=30%)"
+        case .compact:  return "Compact (5h: 85% (4:30 PM) | W: 90% | C: 30%)"
+        case .emoji:    return "Emoji (⏱ 85% (4:30 PM) | 📅 90% | 🧠 30%)"
+        case .minimal:  return "Minimal (85% (4:30 PM) / 90% / 30%)"
         }
     }
 
-    func format(fiveH: Int, weekly: Int, resetTime: String?) -> String {
+    func format(fiveH: Int, weekly: Int, resetTime: String?, ctx: Int? = nil) -> String {
         let resetPart = (resetTime != nil && !resetTime!.isEmpty) ? " (\(resetTime!))" : ""
+        let ctxPart: String
         switch self {
         case .standard:
-            return "5HL=\(fiveH)%\(resetPart)  We=\(weekly)%"
+            ctxPart = ctx != nil ? "  Ctx=\(ctx!)%" : ""
+            return "5HL=\(fiveH)%\(resetPart)  We=\(weekly)%\(ctxPart)"
         case .compact:
-            return "5h: \(fiveH)%\(resetPart) | W: \(weekly)%"
+            ctxPart = ctx != nil ? " | C: \(ctx!)%" : ""
+            return "5h: \(fiveH)%\(resetPart) | W: \(weekly)%\(ctxPart)"
         case .emoji:
-            return "⏱ \(fiveH)%\(resetPart) | 📅 \(weekly)%"
+            ctxPart = ctx != nil ? " | 🧠 \(ctx!)%" : ""
+            return "⏱ \(fiveH)%\(resetPart) | 📅 \(weekly)%\(ctxPart)"
         case .minimal:
-            return "\(fiveH)%\(resetPart) / \(weekly)%"
+            ctxPart = ctx != nil ? " / \(ctx!)%" : ""
+            return "\(fiveH)%\(resetPart) / \(weekly)%\(ctxPart)"
         }
     }
 }
@@ -321,12 +335,93 @@ class LimitFetcher {
     }
 }
 
+// MARK: - Context Window Fetcher
+
+class ContextWindowFetcher {
+    static let shared = ContextWindowFetcher()
+
+    /// Read the latest Codex session rollout file and extract context window usage.
+    func fetchContextWindow() -> ContextWindowData? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let sessionsBase = home.appendingPathComponent(".codex/sessions")
+
+        // Try today first, then yesterday (sessions may span midnight)
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy/MM/dd"
+
+        let datesToTry = [Date(), calendar.date(byAdding: .day, value: -1, to: Date())!]
+
+        var latestFile: URL? = nil
+        var latestModDate = Date.distantPast
+
+        for date in datesToTry {
+            let dayDir = sessionsBase.appendingPathComponent(formatter.string(from: date))
+            guard let files = try? FileManager.default.contentsOfDirectory(at: dayDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
+
+            for file in files {
+                guard file.lastPathComponent.hasPrefix("rollout-") && file.pathExtension == "jsonl" else { continue }
+                if let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
+                   let modDate = attrs.contentModificationDate,
+                   modDate > latestModDate {
+                    latestModDate = modDate
+                    latestFile = file
+                }
+            }
+        }
+
+        guard let rolloutFile = latestFile else { return nil }
+
+        // Extract session ID from filename: rollout-<datetime>-<uuid>.jsonl
+        let sessionId = rolloutFile.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "rollout-", with: "")
+
+        // Read file and find last token_count event (read from end for efficiency)
+        guard let fileData = try? Data(contentsOf: rolloutFile),
+              let fileStr = String(data: fileData, encoding: .utf8) else { return nil }
+
+        let lines = fileStr.components(separatedBy: "\n")
+
+        // Scan backwards for the last token_count event
+        for i in stride(from: lines.count - 1, through: max(0, lines.count - 500), by: -1) {
+            let line = lines[i]
+            guard line.contains("\"token_count\"") else { continue }
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let payload = json["payload"] as? [String: Any],
+                  let payloadType = payload["type"] as? String,
+                  payloadType == "token_count",
+                  let info = payload["info"] as? [String: Any],
+                  let modelCtxWindow = info["model_context_window"] as? Int else { continue }
+
+            let lastUsage = info["last_token_usage"] as? [String: Any]
+            let inputTokens = (lastUsage?["input_tokens"] as? Int) ?? 0
+            let totalTokens = (lastUsage?["total_tokens"] as? Int) ?? 0
+
+            // Context fullness = input_tokens / model_context_window (input is what fills the window)
+            let pctFull = modelCtxWindow > 0 ? min(100, Int(round(Double(inputTokens) / Double(modelCtxWindow) * 100.0))) : 0
+
+            return ContextWindowData(
+                inputTokens: inputTokens,
+                totalTokens: totalTokens,
+                modelContextWindow: modelCtxWindow,
+                percentFull: pctFull,
+                sessionId: String(sessionId.suffix(36)),  // just the UUID part
+                lastUpdated: Date()
+            )
+        }
+
+        return nil
+    }
+}
+
 // MARK: - Menu Bar App Delegate
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private var currentData: RateLimitData?
+    private var currentContextData: ContextWindowData?
     private let launchAgentIdentifier = "com.codexlimitbar.menubar"
 
     // Warning state tracking
@@ -371,6 +466,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var showContextWindowInBar: Bool {
+        get {
+            return UserDefaults.standard.object(forKey: "show_context_in_bar") == nil ? true : UserDefaults.standard.bool(forKey: "show_context_in_bar")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "show_context_in_bar")
+            updateTitle()
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
@@ -408,6 +513,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         button.title = "5HL=?  We=?"
                     }
                     self.buildMenu(loading: false, error: error.localizedDescription)
+                }
+            }
+        }
+
+        // Fetch context window usage from latest Codex session rollout
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ctxData = ContextWindowFetcher.shared.fetchContextWindow()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.currentContextData = ctxData
+                self.updateTitle()
+                if self.currentData != nil {
+                    self.buildMenu(loading: false)
                 }
             }
         }
@@ -505,7 +623,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateTitle() {
         guard let data = currentData, let button = statusItem.button else { return }
         let resetStr = showResetTimeInBar ? formatShortResetTime(data.fiveHResetAt) : nil
-        let titleText = currentStyle.format(fiveH: data.fiveHPercentLeft, weekly: data.weeklyPercentLeft, resetTime: resetStr)
+        let ctxVal = showContextWindowInBar ? currentContextData?.percentFull : nil
+        let titleText = currentStyle.format(fiveH: data.fiveHPercentLeft, weekly: data.weeklyPercentLeft, resetTime: resetStr, ctx: ctxVal)
 
         let fiveHDanger = data.fiveHPercentLeft >= 1 && data.fiveHPercentLeft <= 10
         let weeklyDanger = data.weeklyPercentLeft >= 1 && data.weeklyPercentLeft <= 10
@@ -613,6 +732,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             weeklyResetItem.isEnabled = false
             menu.addItem(weeklyResetItem)
 
+            // Context Window (if available)
+            if let ctx = currentContextData {
+                menu.addItem(NSMenuItem.separator())
+                let numFormatter = NumberFormatter()
+                numFormatter.numberStyle = .decimal
+                let inputStr = numFormatter.string(from: NSNumber(value: ctx.inputTokens)) ?? "\(ctx.inputTokens)"
+                let maxStr = numFormatter.string(from: NSNumber(value: ctx.modelContextWindow)) ?? "\(ctx.modelContextWindow)"
+
+                let ctxItem = NSMenuItem(title: "🧠  Context Window: \(ctx.percentFull)% full (\(inputStr) / \(maxStr) tokens)", action: nil, keyEquivalent: "")
+                menu.addItem(ctxItem)
+
+                let ctxSub = NSMenuItem(title: "     Session: ...\(ctx.sessionId.suffix(8)) • \(100 - ctx.percentFull)% headroom", action: nil, keyEquivalent: "")
+                ctxSub.isEnabled = false
+                menu.addItem(ctxSub)
+            }
+
             menu.addItem(NSMenuItem.separator())
 
             let timeFormatter = DateFormatter()
@@ -643,6 +778,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         toggleTimeItem.target = self
         toggleTimeItem.state = showResetTimeInBar ? .on : .off
         menu.addItem(toggleTimeItem)
+
+        // Toggle: Show Context Window in Menu Bar
+        let toggleCtxItem = NSMenuItem(title: "Show Context Window % in Bar", action: #selector(toggleContextDisplay), keyEquivalent: "")
+        toggleCtxItem.target = self
+        toggleCtxItem.state = showContextWindowInBar ? .on : .off
+        menu.addItem(toggleCtxItem)
 
         // Submenu: Display Styles
         let styleMenuItem = NSMenuItem(title: "Display Style", action: nil, keyEquivalent: "")
@@ -693,6 +834,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleResetTimeDisplay() {
         showResetTimeInBar = !showResetTimeInBar
+        buildMenu(loading: false)
+    }
+
+    @objc private func toggleContextDisplay() {
+        showContextWindowInBar = !showContextWindowInBar
         buildMenu(loading: false)
     }
 
