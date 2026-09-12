@@ -68,9 +68,9 @@
   ├──────────────────────────────────────────────────────────┤
   │ 📅  Weekly Limit: 90% left (10% used)                     │
   │      Resets: Friday, 10:00 AM (in 4d 12h)                │
-  ├──────────────────────────────────────────────────────────┤
-  │ 🧠  Context Window: 30% full (76,000 / 258,400 tokens)   │
-  │      Session: ...3d203d97 • 70% headroom                 │
+  │ 🧠  Context Window: 31% full (80,433 / 258,400 tokens)   │
+  │      Chat: "Remove delays from browser hot paths"        │
+  │      177,967 headroom (69% left) • Last turn: 9:39 AM    │
   ├──────────────────────────────────────────────────────────┤
   │ Synced: 2:15:40 PM (every 5s)                            │
   ├──────────────────────────────────────────────────────────┤

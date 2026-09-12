@@ -49,11 +49,14 @@ struct RateLimitData {
 
 struct ContextWindowData {
     let inputTokens: Int
+    let outputTokens: Int
     let totalTokens: Int
     let modelContextWindow: Int
-    let percentFull: Int          // 0-100
-    let sessionId: String
-    let lastUpdated: Date
+    let percentFull: Int          // 0-100 (matches official Codex desktop formula: min(totalTokens, modelContextWindow) / modelContextWindow * 100)
+    let threadName: String        // Human-friendly title of the active chat
+    let sessionId: String         // Session UUID
+    let eventTimestamp: Date?     // Exact timestamp of the latest token_count turn event
+    let lastUpdated: Date         // App read timestamp
 }
 
 // MARK: - Display Styles
@@ -344,43 +347,62 @@ class LimitFetcher {
 class ContextWindowFetcher {
     static let shared = ContextWindowFetcher()
 
-    /// Read the latest Codex session rollout file and extract context window usage.
-    func fetchContextWindow() -> ContextWindowData? {
+    /// Find the path to the most recent rollout session log across all session folders
+    func findLatestRolloutFile() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let sessionsBase = home.appendingPathComponent(".codex/sessions")
-
-        // Try today first, then yesterday (sessions may span midnight)
-        let calendar = Calendar.current
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy/MM/dd"
-
-        let datesToTry = [Date(), calendar.date(byAdding: .day, value: -1, to: Date())!]
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessionsBase,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
 
         var latestFile: URL? = nil
         var latestModDate = Date.distantPast
 
-        for date in datesToTry {
-            let dayDir = sessionsBase.appendingPathComponent(formatter.string(from: date))
-            guard let files = try? FileManager.default.contentsOfDirectory(at: dayDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
-
-            for file in files {
-                guard file.lastPathComponent.hasPrefix("rollout-") && file.pathExtension == "jsonl" else { continue }
-                if let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
-                   let modDate = attrs.contentModificationDate,
-                   modDate > latestModDate {
-                    latestModDate = modDate
-                    latestFile = file
-                }
+        for case let fileURL as URL in enumerator {
+            guard fileURL.pathExtension == "jsonl" && fileURL.lastPathComponent.hasPrefix("rollout-") else { continue }
+            if let attrs = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
+               let modDate = attrs.contentModificationDate,
+               modDate > latestModDate {
+                latestModDate = modDate
+                latestFile = fileURL
             }
         }
+        return latestFile
+    }
 
-        guard let rolloutFile = latestFile else { return nil }
+    /// Read thread names dictionary from ~/.codex/session_index.jsonl
+    func fetchThreadNames() -> [String: String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let indexPath = home.appendingPathComponent(".codex/session_index.jsonl")
+        guard let data = try? Data(contentsOf: indexPath),
+              let str = String(data: data, encoding: .utf8) else { return [:] }
 
-        // Extract session ID from filename: rollout-<datetime>-<uuid>.jsonl
-        let sessionId = rolloutFile.deletingPathExtension().lastPathComponent
-            .replacingOccurrences(of: "rollout-", with: "")
+        var map: [String: String] = [:]
+        for line in str.components(separatedBy: "\n") {
+            guard !line.isEmpty, let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let id = json["id"] as? String,
+                  let name = json["thread_name"] as? String else { continue }
+            map[id] = name
+        }
+        return map
+    }
 
-        // Read file and find last token_count event (read from end for efficiency)
+    /// Read the latest active Codex session rollout file and extract context window usage with exact Codex desktop logic.
+    func fetchContextWindow() -> ContextWindowData? {
+        guard let rolloutFile = findLatestRolloutFile() else { return nil }
+
+        // Extract session UUID from filename: rollout-<datetime>-<uuid>.jsonl
+        let filename = rolloutFile.deletingPathExtension().lastPathComponent
+        let rawId = filename.replacingOccurrences(of: "rollout-", with: "")
+        let sessionUuid = rawId.count >= 36 ? String(rawId.suffix(36)) : rawId
+
+        let threadNames = fetchThreadNames()
+        let chatTitle = threadNames[sessionUuid] ?? ""
+
+        // Read file and find last token_count event (read backwards from end for efficiency)
         guard let fileData = try? Data(contentsOf: rolloutFile),
               let fileStr = String(data: fileData, encoding: .utf8) else { return nil }
 
@@ -396,54 +418,43 @@ class ContextWindowFetcher {
                   let payloadType = payload["type"] as? String,
                   payloadType == "token_count",
                   let info = payload["info"] as? [String: Any],
-                  let modelCtxWindow = info["model_context_window"] as? Int else { continue }
+                  let modelCtxWindow = info["model_context_window"] as? Int, modelCtxWindow > 0 else { continue }
 
             let lastUsage = info["last_token_usage"] as? [String: Any]
-            let inputTokens = (lastUsage?["input_tokens"] as? Int) ?? 0
-            let totalTokens = (lastUsage?["total_tokens"] as? Int) ?? 0
+            let totalUsage = info["total_token_usage"] as? [String: Any]
 
-            // Context fullness = input_tokens / model_context_window (input is what fills the window)
-            let pctFull = modelCtxWindow > 0 ? min(100, Int(round(Double(inputTokens) / Double(modelCtxWindow) * 100.0))) : 0
+            let inputTokens = (lastUsage?["input_tokens"] as? Int) ?? (totalUsage?["input_tokens"] as? Int) ?? 0
+            let outputTokens = (lastUsage?["output_tokens"] as? Int) ?? (totalUsage?["output_tokens"] as? Int) ?? 0
+            let totalTokens = (lastUsage?["total_tokens"] as? Int) ?? (inputTokens + outputTokens)
+
+            // Exact calculation matching official ChatGPT desktop app:
+            // used = min(totalTokens, modelContextWindow)
+            // percent = round(used / modelContextWindow * 100)
+            let usedTokens = min(totalTokens, modelCtxWindow)
+            let pctFull = min(100, Int(round(Double(usedTokens) / Double(modelCtxWindow) * 100.0)))
+
+            // Extract ISO8601 timestamp of this specific token_count turn event
+            var eventDate: Date? = nil
+            if let tsStr = json["timestamp"] as? String {
+                let isoFormatter = ISO8601DateFormatter()
+                isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                eventDate = isoFormatter.date(from: tsStr) ?? ISO8601DateFormatter().date(from: tsStr)
+            }
 
             return ContextWindowData(
                 inputTokens: inputTokens,
+                outputTokens: outputTokens,
                 totalTokens: totalTokens,
                 modelContextWindow: modelCtxWindow,
                 percentFull: pctFull,
-                sessionId: String(sessionId.suffix(36)),  // just the UUID part
+                threadName: chatTitle,
+                sessionId: sessionUuid,
+                eventTimestamp: eventDate,
                 lastUpdated: Date()
             )
         }
 
         return nil
-    }
-
-    /// Find the path to the most recent rollout session log
-    func findLatestRolloutFile() -> URL? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let sessionsBase = home.appendingPathComponent(".codex/sessions")
-        let calendar = Calendar.current
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy/MM/dd"
-
-        let datesToTry = [Date(), calendar.date(byAdding: .day, value: -1, to: Date())!]
-        var latestFile: URL? = nil
-        var latestModDate = Date.distantPast
-
-        for date in datesToTry {
-            let dayDir = sessionsBase.appendingPathComponent(formatter.string(from: date))
-            guard let files = try? FileManager.default.contentsOfDirectory(at: dayDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
-            for file in files {
-                guard file.lastPathComponent.hasPrefix("rollout-") && file.pathExtension == "jsonl" else { continue }
-                if let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
-                   let modDate = attrs.contentModificationDate,
-                   modDate > latestModDate {
-                    latestModDate = modDate
-                    latestFile = file
-                }
-            }
-        }
-        return latestFile
     }
 
     /// Extract last active prompt, plan, and full work done to generate a handoff prompt for another AI
@@ -1067,13 +1078,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 menu.addItem(NSMenuItem.separator())
                 let numFormatter = NumberFormatter()
                 numFormatter.numberStyle = .decimal
-                let inputStr = numFormatter.string(from: NSNumber(value: ctx.inputTokens)) ?? "\(ctx.inputTokens)"
+                let usedStr = numFormatter.string(from: NSNumber(value: ctx.totalTokens)) ?? "\(ctx.totalTokens)"
                 let maxStr = numFormatter.string(from: NSNumber(value: ctx.modelContextWindow)) ?? "\(ctx.modelContextWindow)"
+                let headroomTokens = max(0, ctx.modelContextWindow - ctx.totalTokens)
+                let headroomStr = numFormatter.string(from: NSNumber(value: headroomTokens)) ?? "\(headroomTokens)"
 
-                let ctxItem = NSMenuItem(title: "🧠  Context Window: \(ctx.percentFull)% full (\(inputStr) / \(maxStr) tokens)", action: nil, keyEquivalent: "")
+                let ctxItem = NSMenuItem(title: "🧠  Context Window: \(ctx.percentFull)% full (\(usedStr) / \(maxStr) tokens)", action: nil, keyEquivalent: "")
                 menu.addItem(ctxItem)
 
-                let ctxSub = NSMenuItem(title: "     Session: ...\(ctx.sessionId.suffix(8)) • \(100 - ctx.percentFull)% headroom", action: nil, keyEquivalent: "")
+                let chatLabel = ctx.threadName.isEmpty ? "Active Session (...\(ctx.sessionId.suffix(8)))" : "\"\(ctx.threadName)\""
+                let chatItem = NSMenuItem(title: "     Chat: \(chatLabel)", action: nil, keyEquivalent: "")
+                chatItem.isEnabled = false
+                menu.addItem(chatItem)
+
+                var turnDateStr = ""
+                if let eventDate = ctx.eventTimestamp {
+                    let df = DateFormatter()
+                    df.timeStyle = .medium
+                    df.dateStyle = .none
+                    turnDateStr = " • Last turn: \(df.string(from: eventDate))"
+                }
+
+                let ctxSub = NSMenuItem(title: "     \(headroomStr) headroom (\(100 - ctx.percentFull)% left)\(turnDateStr)", action: nil, keyEquivalent: "")
                 ctxSub.isEnabled = false
                 menu.addItem(ctxSub)
             }
