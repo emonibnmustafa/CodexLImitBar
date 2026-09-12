@@ -20,7 +20,9 @@ echo "📦 Target Architecture: $ARCH (macOS 12.0+)"
 swiftc -O -target "${ARCH}-apple-macos12.0" \
     "$REPO_DIR/src/main.swift" \
     -o "$MACOS_DIR/$APP_NAME" \
-    -framework Cocoa
+    -framework Cocoa \
+    -lsqlite3
+
 
 cp "$REPO_DIR/Info.plist" "$BUNDLE_DIR/Contents/Info.plist"
 

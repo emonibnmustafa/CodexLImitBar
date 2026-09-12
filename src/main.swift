@@ -1,5 +1,7 @@
 import Cocoa
 import Foundation
+import SQLite3
+
 
 // MARK: - Data Models
 
@@ -344,11 +346,75 @@ class LimitFetcher {
 
 // MARK: - Context Window Fetcher
 
+struct ActiveThreadTarget {
+    let rolloutURL: URL
+    let threadId: String
+    let title: String
+    let updatedAt: Date?
+}
+
 class ContextWindowFetcher {
     static let shared = ContextWindowFetcher()
 
-    /// Find the path to the most recent rollout session log across all session folders
-    func findLatestRolloutFile() -> URL? {
+    /// Query ~/.codex/state_*.sqlite to find the most recent user-facing chat session (ignoring internal subagent threads)
+    func findActiveUserThread() -> ActiveThreadTarget? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let codexDir = home.appendingPathComponent(".codex")
+
+        if let contents = try? FileManager.default.contentsOfDirectory(at: codexDir, includingPropertiesForKeys: nil) {
+            let stateDbs = contents
+                .filter { $0.lastPathComponent.hasPrefix("state_") && $0.pathExtension == "sqlite" }
+                .sorted { $0.lastPathComponent > $1.lastPathComponent }
+
+            for dbUrl in stateDbs {
+                var db: OpaquePointer?
+                let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
+                if sqlite3_open_v2(dbUrl.path, &db, flags, nil) == SQLITE_OK {
+                    defer { sqlite3_close(db) }
+
+                    // Query the most recently updated non-subagent thread that is not archived
+                    let query = """
+                    SELECT rollout_path, id, COALESCE(NULLIF(name, ''), title), updated_at_ms, updated_at
+                    FROM threads
+                    WHERE archived = 0 AND (thread_source IS NULL OR thread_source != 'subagent')
+                    ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC
+                    LIMIT 1;
+                    """
+
+                    var stmt: OpaquePointer?
+                    if sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK {
+                        defer { sqlite3_finalize(stmt) }
+                        if sqlite3_step(stmt) == SQLITE_ROW {
+                            let path = String(cString: sqlite3_column_text(stmt, 0))
+                            let id = String(cString: sqlite3_column_text(stmt, 1))
+                            let title = sqlite3_column_text(stmt, 2) != nil ? String(cString: sqlite3_column_text(stmt, 2)) : ""
+                            let ms = sqlite3_column_int64(stmt, 3)
+                            let sec = sqlite3_column_int64(stmt, 4)
+                            let date: Date? = ms > 0 ? Date(timeIntervalSince1970: Double(ms) / 1000.0) : (sec > 0 ? Date(timeIntervalSince1970: Double(sec)) : nil)
+
+                            let fileUrl = URL(fileURLWithPath: path)
+                            if FileManager.default.fileExists(atPath: fileUrl.path) {
+                                return ActiveThreadTarget(rolloutURL: fileUrl, threadId: id, title: title, updatedAt: date)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: directory mtime scan if SQLite was unavailable or empty
+        guard let fallbackUrl = findLatestRolloutFileByMtime() else { return nil }
+        let filename = fallbackUrl.deletingPathExtension().lastPathComponent
+        let rawId = filename.replacingOccurrences(of: "rollout-", with: "")
+        let sessionUuid = rawId.count >= 36 ? String(rawId.suffix(36)) : rawId
+        let threadNames = fetchThreadNames()
+        let title = threadNames[sessionUuid] ?? ""
+        let modDate = (try? fallbackUrl.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return ActiveThreadTarget(rolloutURL: fallbackUrl, threadId: sessionUuid, title: title, updatedAt: modDate)
+    }
+
+    /// Fallback method to find rollout file purely by filesystem modification date
+    func findLatestRolloutFileByMtime() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let sessionsBase = home.appendingPathComponent(".codex/sessions")
         guard let enumerator = FileManager.default.enumerator(
@@ -372,6 +438,11 @@ class ContextWindowFetcher {
         return latestFile
     }
 
+    /// Return latest rollout file URL of active user thread
+    func findLatestRolloutFile() -> URL? {
+        return findActiveUserThread()?.rolloutURL
+    }
+
     /// Read thread names dictionary from ~/.codex/session_index.jsonl
     func fetchThreadNames() -> [String: String] {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -392,15 +463,14 @@ class ContextWindowFetcher {
 
     /// Read the latest active Codex session rollout file and extract context window usage with exact Codex desktop logic.
     func fetchContextWindow() -> ContextWindowData? {
-        guard let rolloutFile = findLatestRolloutFile() else { return nil }
-
-        // Extract session UUID from filename: rollout-<datetime>-<uuid>.jsonl
-        let filename = rolloutFile.deletingPathExtension().lastPathComponent
-        let rawId = filename.replacingOccurrences(of: "rollout-", with: "")
-        let sessionUuid = rawId.count >= 36 ? String(rawId.suffix(36)) : rawId
-
-        let threadNames = fetchThreadNames()
-        let chatTitle = threadNames[sessionUuid] ?? ""
+        guard let activeTarget = findActiveUserThread() else { return nil }
+        let rolloutFile = activeTarget.rolloutURL
+        let sessionUuid = activeTarget.threadId
+        var chatTitle = activeTarget.title
+        if chatTitle.isEmpty {
+            let threadNames = fetchThreadNames()
+            chatTitle = threadNames[sessionUuid] ?? ""
+        }
 
         // Read file and find last token_count event (read backwards from end for efficiency)
         guard let fileData = try? Data(contentsOf: rolloutFile),
@@ -436,9 +506,12 @@ class ContextWindowFetcher {
             // Extract ISO8601 timestamp of this specific token_count turn event
             var eventDate: Date? = nil
             if let tsStr = json["timestamp"] as? String {
-                let isoFormatter = ISO8601DateFormatter()
-                isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                eventDate = isoFormatter.date(from: tsStr) ?? ISO8601DateFormatter().date(from: tsStr)
+                let isoWithFrac = ISO8601DateFormatter()
+                isoWithFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                eventDate = isoWithFrac.date(from: tsStr) ?? ISO8601DateFormatter().date(from: tsStr)
+            }
+            if eventDate == nil {
+                eventDate = activeTarget.updatedAt
             }
 
             return ContextWindowData(
@@ -1094,9 +1167,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 var turnDateStr = ""
                 if let eventDate = ctx.eventTimestamp {
                     let df = DateFormatter()
-                    df.timeStyle = .medium
-                    df.dateStyle = .none
-                    turnDateStr = " • Last turn: \(df.string(from: eventDate))"
+                    df.doesRelativeDateFormatting = true
+                    df.dateStyle = .short
+                    df.timeStyle = .short
+                    turnDateStr = " • Updated: \(df.string(from: eventDate))"
                 }
 
                 let ctxSub = NSMenuItem(title: "     \(headroomStr) headroom (\(100 - ctx.percentFull)% left)\(turnDateStr)", action: nil, keyEquivalent: "")
