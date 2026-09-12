@@ -32,6 +32,12 @@
   - Whenever the 5-hour limit drops to **10% or less**, only the 5h section displays in bold red (`🔴 5HL=10%`), leaving the weekly section in standard color.
   - Whenever the weekly limit drops to **10% or less**, only the weekly section turns bold red (`🔴 We=10%`), leaving the 5h section unaffected.
   - If both enter the red zone simultaneously, both metrics are highlighted with their own individual red alert indicators. Reverts cleanly to standard styling once usage recovers.
+- **🛑 Emergency Auto-Pause at 3%**:
+  - When the 5-hour limit drops to **3%**, the app instantly shows a critical modal alert and **freezes/pauses active Codex background workers (`SIGSTOP`)** so Codex stops executing and does not consume your remaining queries.
+  - Automatically parses the active Codex session rollout log to create a **tailored AI Handoff Prompt** and copies it to your clipboard.
+  - You can immediately paste that prompt into Claude, Gemini, or ChatGPT to continue your project without interruption.
+  - Includes a built-in **"Resume Codex (Unfreeze)"** button (`SIGCONT`) and a menu toggle to enable or disable automatic pause whenever desired.
+- **📋 On-Demand AI Handoff Prompt**: Click **"Copy Current AI Handoff Prompt"** at any time in the dropdown menu to generate a seamless transition prompt for another AI.
 - **⏱ Live Countdown Timers**: View exact timestamps and ticking countdowns until limit resets.
 - **🎨 Customizable Display Styles**:
   - `Standard`: `5HL=85% (4:30 PM)  We=90%  Ctx=30%` (Default)
@@ -69,6 +75,8 @@
   │ ✓ Show Context Window % in Bar                           │
   │ Display Style                                          > │
   │ Refresh Interval                                       > │
+  │ ✓ 🛑 Auto-Pause Codex at 3% (Emergency Stop)            │
+  │ 📋 Copy Current AI Handoff Prompt                        │
   │ ✓ Launch at Login                                        │
   ├──────────────────────────────────────────────────────────┤
   │ Quit CodexLImitBar                                 ⌘Q │

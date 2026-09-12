@@ -417,6 +417,101 @@ class ContextWindowFetcher {
 
         return nil
     }
+
+    /// Find the path to the most recent rollout session log
+    func findLatestRolloutFile() -> URL? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let sessionsBase = home.appendingPathComponent(".codex/sessions")
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy/MM/dd"
+
+        let datesToTry = [Date(), calendar.date(byAdding: .day, value: -1, to: Date())!]
+        var latestFile: URL? = nil
+        var latestModDate = Date.distantPast
+
+        for date in datesToTry {
+            let dayDir = sessionsBase.appendingPathComponent(formatter.string(from: date))
+            guard let files = try? FileManager.default.contentsOfDirectory(at: dayDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
+            for file in files {
+                guard file.lastPathComponent.hasPrefix("rollout-") && file.pathExtension == "jsonl" else { continue }
+                if let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
+                   let modDate = attrs.contentModificationDate,
+                   modDate > latestModDate {
+                    latestModDate = modDate
+                    latestFile = file
+                }
+            }
+        }
+        return latestFile
+    }
+
+    /// Extract last active goals and generate a handoff prompt for another AI
+    func generateHandoffPrompt() -> String {
+        guard let rolloutFile = findLatestRolloutFile(),
+              let fileData = try? Data(contentsOf: rolloutFile),
+              let fileStr = String(data: fileData, encoding: .utf8) else {
+            return "Resume the previous work. My Codex 5-hour limit was reached."
+        }
+
+        let lines = fileStr.components(separatedBy: "\n")
+        var userTask = ""
+        var lastAssistantCommentary = ""
+
+        // Scan backwards for last meaningful context
+        for i in stride(from: lines.count - 1, through: 0, by: -1) {
+            let line = lines[i]
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
+
+            if let payload = json["payload"] as? [String: Any],
+               let type = payload["type"] as? String,
+               type == "message",
+               let role = payload["role"] as? String,
+               let content = payload["content"] as? [[String: Any]] {
+
+                let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if role == "assistant" && lastAssistantCommentary.isEmpty && !text.isEmpty {
+                    lastAssistantCommentary = String(text.prefix(600))
+                }
+
+                if role == "user" && userTask.isEmpty && !text.isEmpty && !text.contains("<turn_aborted>") {
+                    // Extract core prompt
+                    if let range = text.range(of: "USER TASK:") {
+                        userTask = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else {
+                        userTask = text
+                    }
+                    userTask = String(userTask.prefix(1200))
+                }
+            }
+
+            if !userTask.isEmpty && !lastAssistantCommentary.isEmpty {
+                break
+            }
+        }
+
+        let taskCleaned = userTask.isEmpty ? "Continue previous task." : userTask
+        let commentaryCleaned = lastAssistantCommentary.isEmpty ? "None available." : lastAssistantCommentary
+
+        return """
+        ===============================================================
+        ⚠️ AI HANDOFF PROMPT (Codex 5H Limit Reached at 3%)
+        ===============================================================
+        Context: My previous coding agent (Codex) was paused because the 5-hour usage limit reached 3%.
+
+        [CURRENT TASK OBJECTIVE]
+        \(taskCleaned)
+
+        [LAST KNOWN AGENT STATE / STEP]
+        \(commentaryCleaned)
+
+        [YOUR INSTRUCTION]
+        Please pick up directly from where Codex left off. Review the codebase changes, check git status/diff, and continue implementing or verifying the remaining requirements without starting over.
+        ===============================================================
+        """
+    }
 }
 
 // MARK: - Menu Bar App Delegate
@@ -429,13 +524,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let launchAgentIdentifier = "com.codexlimitbar.menubar"
 
     // Warning state tracking
-    // 5h: alert at 50%, 20%, and 10% (red alert zone)
+    // 5h: alert at 50%, 20%, 10% (red alert zone), and 3% (critical pause/stop threshold)
     private var shown5hThresholds: Set<Int> = []
+    private var shown3PercentAlert = false
     // Weekly: alert at 50%, 30%, and 10% (red alert zone)
     private var shownWeeklyThresholds: Set<Int> = []
     // Track previous values for detecting crossings
     private var prev5hLeft: Int = 100
     private var prevWeeklyLeft: Int = 100
+
+    private var autoPauseAt3Percent: Bool {
+        get {
+            return UserDefaults.standard.object(forKey: "auto_pause_at_3_percent") == nil ? true : UserDefaults.standard.bool(forKey: "auto_pause_at_3_percent")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "auto_pause_at_3_percent")
+            buildMenu(loading: false)
+        }
+    }
 
     // User preferences
     private var currentInterval: TimeInterval {
@@ -539,10 +645,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fiveH = data.fiveHPercentLeft
         let weekly = data.weeklyPercentLeft
 
-        // --- 5h thresholds: popup at 50%, 20%, and 10% (red alert zone) ---
+        // --- 5h thresholds: popup at 50%, 20%, 10% (red alert zone), and 3% (critical emergency stop) ---
         // Reset all shown thresholds when limit recovers above 55%
         if fiveH > 55 {
             shown5hThresholds.removeAll()
+            shown3PercentAlert = false
+        } else if fiveH > 10 {
+            shown3PercentAlert = false
+        }
+
+        // CRITICAL 3% CHECK: Stop Codex from working and generate AI handoff prompt
+        if fiveH <= 3 && fiveH >= 1 && !shown3PercentAlert {
+            shown3PercentAlert = true
+            triggerEmergencyStopAndHandoff(pctLeft: fiveH)
+            prev5hLeft = fiveH
+            prevWeeklyLeft = weekly
+            return
         }
 
         let fiveHCheckpoints = [50, 20, 10]
@@ -615,6 +733,63 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Got it")
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+
+    private func triggerEmergencyStopAndHandoff(pctLeft: Int) {
+        // 1. Pause active background workers (SIGSTOP) if auto-pause is enabled
+        if autoPauseAt3Percent {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            // Pause active trusted-worker processes and codex-code-mode-host
+            task.arguments = ["-STOP", "-f", "trusted-worker|codex-code-mode-host"]
+            try? task.run()
+            task.waitUntilExit()
+        }
+
+        // 2. Generate comprehensive handoff prompt from active session context
+        let handoffPrompt = ContextWindowFetcher.shared.generateHandoffPrompt()
+
+        // 3. Automatically copy handoff prompt to clipboard for immediate convenience
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(handoffPrompt, forType: .string)
+
+        // 4. Show modal alert with instructions and prompt preview
+        let alert = NSAlert()
+        alert.messageText = "🛑 Codex Stopped at \(pctLeft)% Limit!"
+        alert.alertStyle = .critical
+
+        let stopMsg = autoPauseAt3Percent
+            ? "Active Codex worker processes have been PAUSED (frozen) so your remaining limit is preserved.\n\n"
+            : "Your 5-hour limit has reached \(pctLeft)%!\n\n"
+
+        alert.informativeText = """
+        \(stopMsg)An AI Handoff Prompt has been automatically generated and COPIED TO YOUR CLIPBOARD!
+
+        You can paste it directly into Claude, Gemini, or ChatGPT to continue your work without starting over.
+
+        Choose 'Resume Codex' when your 5-hour window resets or when you're ready to proceed.
+        """
+
+        alert.addButton(withTitle: "Copy Prompt Again")
+        alert.addButton(withTitle: "Resume Codex (Unfreeze)")
+        alert.addButton(withTitle: "Dismiss & Wait")
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+
+        switch response {
+        case .alertFirstButtonReturn: // Copy Prompt Again
+            pasteboard.clearContents()
+            pasteboard.setString(handoffPrompt, forType: .string)
+        case .alertSecondButtonReturn: // Resume Codex (SIGCONT)
+            let resumeTask = Process()
+            resumeTask.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            resumeTask.arguments = ["-CONT", "-f", "trusted-worker|codex-code-mode-host"]
+            try? resumeTask.run()
+        default:
+            break
+        }
     }
 
     private func formatShortResetTime(_ date: Date?) -> String? {
@@ -858,6 +1033,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         intervalMenuItem.submenu = intervalSubmenu
         menu.addItem(intervalMenuItem)
 
+        // Toggle: Auto-Stop Codex at 3%
+        let autoStopItem = NSMenuItem(title: "🛑 Auto-Pause Codex at 3% (Emergency Stop)", action: #selector(toggleAutoPause), keyEquivalent: "")
+        autoStopItem.target = self
+        autoStopItem.state = autoPauseAt3Percent ? .on : .off
+        menu.addItem(autoStopItem)
+
+        // Action: Copy AI Handoff Prompt Now
+        let copyPromptItem = NSMenuItem(title: "📋 Copy Current AI Handoff Prompt", action: #selector(copyHandoffPromptNow), keyEquivalent: "")
+        copyPromptItem.target = self
+        menu.addItem(copyPromptItem)
+
         // Launch at Login
         let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         loginItem.target = self
@@ -881,6 +1067,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleContextDisplay() {
         showContextWindowInBar = !showContextWindowInBar
         buildMenu(loading: false)
+    }
+
+    @objc private func toggleAutoPause() {
+        autoPauseAt3Percent = !autoPauseAt3Percent
+    }
+
+    @objc private func copyHandoffPromptNow() {
+        let prompt = ContextWindowFetcher.shared.generateHandoffPrompt()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(prompt, forType: .string)
+
+        let alert = NSAlert()
+        alert.messageText = "📋 AI Handoff Prompt Copied!"
+        alert.informativeText = "The handoff prompt for your current session was successfully copied to your clipboard.\n\nYou can now paste it directly into Claude, Gemini, or any other AI model."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func selectDisplayStyle(_ sender: NSMenuItem) {
