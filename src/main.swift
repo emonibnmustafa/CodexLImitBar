@@ -329,6 +329,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentData: RateLimitData?
     private let launchAgentIdentifier = "com.codexlimitbar.menubar"
 
+    // Warning state tracking
+    private var hasShown5PercentPopup = false
+    private var lastWarningLevel: Int = -1  // tracks last known fiveHPercentLeft to detect transitions
+
     // User preferences
     private var currentInterval: TimeInterval {
         get {
@@ -392,6 +396,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.currentData = data
                     self.updateTitle()
                     self.buildMenu(loading: false)
+                    self.checkWarningThresholds(data)
                 case .failure(let error):
                     NSLog("CodexLImitBar refresh error: \(error.localizedDescription)")
                     if self.currentData == nil, let button = self.statusItem.button {
@@ -401,6 +406,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    private func checkWarningThresholds(_ data: RateLimitData) {
+        let pctLeft = data.fiveHPercentLeft
+
+        // Reset popup flag when limit goes back above 10% (after a reset cycle)
+        if pctLeft > 10 || pctLeft == 0 {
+            hasShown5PercentPopup = false
+        }
+
+        // Show popup at ≤5% (only once per cycle)
+        if pctLeft >= 1 && pctLeft <= 5 && !hasShown5PercentPopup {
+            hasShown5PercentPopup = true
+            showLowLimitPopup(pctLeft: pctLeft)
+        }
+
+        lastWarningLevel = pctLeft
+    }
+
+    private func showLowLimitPopup(pctLeft: Int) {
+        let alert = NSAlert()
+        alert.messageText = "⚠️ CodexLImitBar Warning"
+        alert.informativeText = "Your 5-hour ChatGPT limit is critically low!\n\nOnly \(pctLeft)% remaining.\n\nConsider slowing down usage to avoid hitting the limit."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Got it")
+
+        // Bring the alert to front so it's visible even over other apps
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     private func formatShortResetTime(_ date: Date?) -> String? {
@@ -414,7 +448,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateTitle() {
         guard let data = currentData, let button = statusItem.button else { return }
         let resetStr = showResetTimeInBar ? formatShortResetTime(data.fiveHResetAt) : nil
-        button.title = currentStyle.format(fiveH: data.fiveHPercentLeft, weekly: data.weeklyPercentLeft, resetTime: resetStr)
+        let titleText = currentStyle.format(fiveH: data.fiveHPercentLeft, weekly: data.weeklyPercentLeft, resetTime: resetStr)
+
+        let pctLeft = data.fiveHPercentLeft
+
+        if pctLeft >= 1 && pctLeft <= 10 {
+            // RED warning mode: 1% to 10% remaining
+            let attrs: [NSAttributedString.Key: Any] = [
+                .foregroundColor: NSColor.red,
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
+            ]
+            button.attributedTitle = NSAttributedString(string: "🔴 \(titleText)", attributes: attrs)
+        } else {
+            // Normal mode: 0% (fully reset) or >10%
+            button.attributedTitle = NSAttributedString(string: "")  // clear attributed
+            button.title = titleText
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        }
     }
 
     private func maskEmail(_ email: String) -> String {
