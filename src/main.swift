@@ -446,7 +446,7 @@ class ContextWindowFetcher {
         return latestFile
     }
 
-    /// Extract last active goals and generate a handoff prompt for another AI
+    /// Extract last active prompt, plan, and full work done to generate a handoff prompt for another AI
     func generateHandoffPrompt() -> String {
         guard let rolloutFile = findLatestRolloutFile(),
               let fileData = try? Data(contentsOf: rolloutFile),
@@ -455,60 +455,174 @@ class ContextWindowFetcher {
         }
 
         let lines = fileStr.components(separatedBy: "\n")
-        var userTask = ""
-        var lastAssistantCommentary = ""
+        var lastUserPrompt = ""
+        var planEntries: [String] = []
+        var assistantSteps: [String] = []
+        var executedCommands: [(cmd: String, status: String, output: String)] = []
+        var activeCwd: String? = nil
 
-        // Scan backwards for last meaningful context
-        for i in stride(from: lines.count - 1, through: 0, by: -1) {
-            let line = lines[i]
+        for line in lines {
             guard let lineData = line.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
 
-            if let payload = json["payload"] as? [String: Any],
-               let type = payload["type"] as? String,
-               type == "message",
-               let role = payload["role"] as? String,
+            let type = json["type"] as? String
+            let payload = json["payload"] as? [String: Any] ?? [:]
+            let payloadType = payload["type"] as? String
+
+            // 1. Detect active working directory
+            if let item = payload["item"] as? [String: Any],
+               let cwd = item["cwd"] as? String {
+                activeCwd = cwd.replacingOccurrences(of: "file://", with: "")
+            } else if type == "turn_context",
+                      let cwd = (payload["cwd"] as? String) ?? (payload["working_directory"] as? String) {
+                activeCwd = cwd.replacingOccurrences(of: "file://", with: "")
+            }
+
+            // 2. User Prompts
+            if type == "response_item", payloadType == "message",
+               let role = payload["role"] as? String, role == "user",
                let content = payload["content"] as? [[String: Any]] {
-
                 let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-
-                if role == "assistant" && lastAssistantCommentary.isEmpty && !text.isEmpty {
-                    lastAssistantCommentary = String(text.prefix(600))
-                }
-
-                if role == "user" && userTask.isEmpty && !text.isEmpty && !text.contains("<turn_aborted>") {
-                    // Extract core prompt
-                    if let range = text.range(of: "USER TASK:") {
-                        userTask = String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    } else {
-                        userTask = text
+                if !text.isEmpty && !text.contains("<turn_aborted>") {
+                    var cleaned = text
+                    // Strip system wrapper tags
+                    if let r = cleaned.range(of: "</environment_context>") {
+                        cleaned = String(cleaned[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
                     }
-                    userTask = String(userTask.prefix(1200))
+                    if let r = cleaned.range(of: "</recommended_plugins>") {
+                        cleaned = String(cleaned[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    if cleaned.contains("USER TASK:") {
+                        let parts = cleaned.components(separatedBy: "USER TASK:")
+                        if let lastPart = parts.last?.trimmingCharacters(in: .whitespacesAndNewlines), !lastPart.isEmpty {
+                            cleaned = lastPart
+                        }
+                    }
+                    if !cleaned.isEmpty {
+                        lastUserPrompt = cleaned
+                    }
                 }
             }
 
-            if !userTask.isEmpty && !lastAssistantCommentary.isEmpty {
-                break
+            // 3. Assistant Messages (Plan vs Progress Notes)
+            if type == "response_item", payloadType == "message",
+               let role = payload["role"] as? String, role == "assistant",
+               let content = payload["content"] as? [[String: Any]] {
+                let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    if planEntries.count < 2 {
+                        planEntries.append(text)
+                    } else {
+                        assistantSteps.append(text)
+                    }
+                }
+            }
+
+            // 4. Command Execution Records
+            if payloadType == "item_completed",
+               let item = payload["item"] as? [String: Any],
+               let itemType = item["type"] as? String, itemType == "CommandExecution" {
+                var cmdStr = ""
+                if let cmdList = item["command"] as? [String] {
+                    cmdStr = cmdList.joined(separator: " ")
+                } else if let s = item["command"] as? String {
+                    cmdStr = s
+                }
+                if cmdStr.hasPrefix("/bin/zsh -lc ") {
+                    cmdStr = String(cmdStr.dropFirst(13)).trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+                }
+
+                let status = (item["status"] as? String) ?? "unknown"
+                let stdout = (item["stdout"] as? String) ?? ""
+                let stderr = (item["stderr"] as? String) ?? ""
+                let combined = (stdout.isEmpty ? stderr : stdout).trimmingCharacters(in: .whitespacesAndNewlines)
+
+                executedCommands.append((cmd: cmdStr, status: status, output: combined))
             }
         }
 
-        let taskCleaned = userTask.isEmpty ? "Continue previous task." : userTask
-        let commentaryCleaned = lastAssistantCommentary.isEmpty ? "None available." : lastAssistantCommentary
+        // Git status from active workspace if accessible
+        var gitSummary = ""
+        if let cwd = activeCwd, FileManager.default.fileExists(atPath: cwd) {
+            let branchTask = Process()
+            branchTask.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            branchTask.arguments = ["branch", "--show-current"]
+            branchTask.currentDirectoryURL = URL(fileURLWithPath: cwd)
+            let bPipe = Pipe()
+            branchTask.standardOutput = bPipe
+            try? branchTask.run()
+            branchTask.waitUntilExit()
+            let branch = String(data: bPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            let statusTask = Process()
+            statusTask.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            statusTask.arguments = ["status", "--short"]
+            statusTask.currentDirectoryURL = URL(fileURLWithPath: cwd)
+            let sPipe = Pipe()
+            statusTask.standardOutput = sPipe
+            try? statusTask.run()
+            statusTask.waitUntilExit()
+            let st = String(data: sPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            gitSummary = "• Workspace: \(cwd)\(branch.isEmpty ? "" : " (branch: \(branch))")\n"
+            if !st.isEmpty {
+                gitSummary += "• Uncommitted / Modified Files:\n\(st)\n"
+            } else {
+                gitSummary += "• Git Status: Clean (no uncommitted file modifications)\n"
+            }
+        }
+
+        // Format Work Done section
+        var workItems: [String] = []
+        if !gitSummary.isEmpty {
+            workItems.append(gitSummary)
+        }
+
+        if !assistantSteps.isEmpty {
+            workItems.append("• Progress Notes & Analysis:")
+            for (idx, step) in assistantSteps.suffix(6).enumerated() {
+                workItems.append("  [\(idx + 1)] \(step)")
+            }
+        }
+
+        if !executedCommands.isEmpty {
+            workItems.append("\n• Recent Actions & Executed Commands:")
+            for rec in executedCommands.suffix(8) {
+                let icon = rec.status == "completed" ? "✅" : "❌"
+                var line = "  \(icon) `\(rec.cmd)`"
+                if rec.status != "completed" || rec.output.contains("FAIL") || rec.output.contains("Error") {
+                    let preview = String(rec.output.prefix(350))
+                    line += "\n     Result: \(preview)"
+                }
+                workItems.append(line)
+            }
+        }
+
+        let promptText = lastUserPrompt.isEmpty ? "Continue previous task." : lastUserPrompt
+        let planText = planEntries.isEmpty ? "No explicit initial plan recorded." : planEntries.joined(separator: "\n\n")
+        let workDoneText = workItems.isEmpty ? "No execution history recorded." : workItems.joined(separator: "\n")
 
         return """
         ===============================================================
-        ⚠️ AI HANDOFF PROMPT (Codex 5H Limit Reached at 3%)
+        ⚠️ CODEX AI HANDOFF PROMPT (5H Limit Reached)
         ===============================================================
-        Context: My previous coding agent (Codex) was paused because the 5-hour usage limit reached 3%.
+        Context: Codex was paused because the 5-hour usage limit reached 3%.
+        Use the prompt, plan, and work history below to seamlessly continue the task.
 
-        [CURRENT TASK OBJECTIVE]
-        \(taskCleaned)
+        [1. LAST PROMPT GIVEN TO CODEX]
+        \(promptText)
 
-        [LAST KNOWN AGENT STATE / STEP]
-        \(commentaryCleaned)
+        [2. PLAN CODEX MADE FOR WORKING]
+        \(planText)
 
-        [YOUR INSTRUCTION]
-        Please pick up directly from where Codex left off. Review the codebase changes, check git status/diff, and continue implementing or verifying the remaining requirements without starting over.
+        [3. FULL WORK DONE TILL STOPPING]
+        \(workDoneText)
+
+        [4. INSTRUCTIONS FOR CONTINUING AI]
+        Please pick up directly from where Codex stopped:
+        1. Review the original prompt requirements and Codex's plan above.
+        2. Check the workspace files, git status, and the last executed command result / failure.
+        3. Continue implementing and verifying the remaining steps without repeating already-completed work.
         ===============================================================
         """
     }

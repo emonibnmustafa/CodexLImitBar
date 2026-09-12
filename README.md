@@ -34,10 +34,14 @@
   - If both enter the red zone simultaneously, both metrics are highlighted with their own individual red alert indicators. Reverts cleanly to standard styling once usage recovers.
 - **🛑 Emergency Auto-Pause at 3%**:
   - When the 5-hour limit drops to **3%**, the app instantly shows a critical modal alert and **freezes/pauses active Codex background workers (`SIGSTOP`)** so Codex stops executing and does not consume your remaining queries.
-  - Automatically parses the active Codex session rollout log to create a **tailored AI Handoff Prompt** and copies it to your clipboard.
-  - You can immediately paste that prompt into Claude, Gemini, or ChatGPT to continue your project without interruption.
+  - Automatically parses the active Codex session rollout log to create a comprehensive **AI Handoff Prompt** and copies it to your clipboard.
+  - The generated prompt carries:
+    1. **The Last User Prompt**: The exact requirements and instructions you gave Codex to start working.
+    2. **The Plan Codex Made**: The strategy, skill review, and plan steps formulated by Codex.
+    3. **Full Work Done Till Stopping**: Workspace directory, branch, git changes (modified/untracked files), progress notes, and recent commands executed with their pass/fail results.
+    4. **Continuation Instructions**: Clear directives for the next AI (Claude, Gemini, ChatGPT) to pick up directly from where Codex left off without re-doing work.
   - Includes a built-in **"Resume Codex (Unfreeze)"** button (`SIGCONT`) and a menu toggle to enable or disable automatic pause whenever desired.
-- **📋 On-Demand AI Handoff Prompt**: Click **"Copy Current AI Handoff Prompt"** at any time in the dropdown menu to generate a seamless transition prompt for another AI.
+- **📋 On-Demand AI Handoff Prompt**: Click **"Copy Current AI Handoff Prompt"** at any time in the dropdown menu to generate and copy the full prompt from your active session.
 - **⏱ Live Countdown Timers**: View exact timestamps and ticking countdowns until limit resets.
 - **🎨 Customizable Display Styles**:
   - `Standard`: `5HL=85% (4:30 PM)  We=90%  Ctx=30%` (Default)
