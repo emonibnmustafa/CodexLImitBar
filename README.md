@@ -25,22 +25,22 @@
 
 - **⚡️ Real-Time Rate Limit Monitoring**: See your **5-hour rolling limit** and **weekly limit** directly in your menu bar (`5HL=85% (4:30 PM)  We=90%`).
 - **🧠 Active Chat Context Window Tracking**: Displays the current conversation's context window usage percentage (`Ctx=30%`) in real-time, extracted directly from local Codex session rollout logs with exact input token counts and total model headroom.
-- **🚨 Smart Threshold Popups & Notifications**:
-  - **5-Hour Limit**: Screen popup reminders trigger when reaching **50%**, **20%**, and **10%** (critical alert zone).
+- **🚨 Smart Threshold Popups & Notifications (100% Non-Intrusive)**:
+  - **5-Hour Limit**: Screen popup reminders trigger when reaching **50%**, **20%**, **10%** (critical alert zone), and **3%** (critical limit warning).
   - **Weekly Limit**: Warning popups trigger when reaching **50%**, **30%**, and **10%** (critical alert zone).
+  - **Zero Interruption**: The tool never stops, pauses, or interferes with Codex processes. Codex continues running uninterrupted while you stay informed.
 - **🔴 Independent Red Zone Visual Alerts**:
   - Whenever the 5-hour limit drops to **10% or less**, only the 5h section displays in bold red (`🔴 5HL=10%`), leaving the weekly section in standard color.
   - Whenever the weekly limit drops to **10% or less**, only the weekly section turns bold red (`🔴 We=10%`), leaving the 5h section unaffected.
   - If both enter the red zone simultaneously, both metrics are highlighted with their own individual red alert indicators. Reverts cleanly to standard styling once usage recovers.
-- **🛑 Emergency Auto-Pause at 3%**:
-  - When the 5-hour limit drops to **3%**, the app instantly shows a critical modal alert and **freezes/pauses active Codex background workers (`SIGSTOP`)** so Codex stops executing and does not consume your remaining queries.
-  - Automatically parses the active Codex session rollout log to create a comprehensive **AI Handoff Prompt** and copies it to your clipboard.
-  - The generated prompt carries:
-    1. **The Last User Prompt**: The exact requirements and instructions you gave Codex to start working.
+- **⚠️ 3% Critical Limit Alert & AI Handoff Prompt**:
+  - When the 5-hour limit drops to **3%**, a prominent warning popup alerts you on screen that your limit is almost exhausted.
+  - Includes a quick **"Copy AI Handoff Prompt"** button directly on the 3% popup and in the menu.
+  - Automatically parses the active user conversation rollout log to create a comprehensive prompt carrying:
+    1. **The Last User Prompt**: The exact requirements and instructions given to Codex.
     2. **The Plan Codex Made**: The strategy, skill review, and plan steps formulated by Codex.
-    3. **Full Work Done Till Stopping**: Workspace directory, branch, git changes (modified/untracked files), progress notes, and recent commands executed with their pass/fail results.
+    3. **Full Work Done So Far**: Workspace directory, branch, git changes (modified/untracked files), progress notes, and recent commands executed with their pass/fail results.
     4. **Continuation Instructions**: Clear directives for the next AI (Claude, Gemini, ChatGPT) to pick up directly from where Codex left off without re-doing work.
-  - Includes a built-in **"Resume Codex (Unfreeze)"** button (`SIGCONT`) and a menu toggle to enable or disable automatic pause whenever desired.
 - **📋 On-Demand AI Handoff Prompt**: Click **"Copy Current AI Handoff Prompt"** at any time in the dropdown menu to generate and copy the full prompt from your active session.
 - **⏱ Live Countdown Timers**: View exact timestamps and ticking countdowns until limit resets.
 - **🎨 Customizable Display Styles**:
@@ -68,9 +68,9 @@
   ├──────────────────────────────────────────────────────────┤
   │ 📅  Weekly Limit: 90% left (10% used)                     │
   │      Resets: Friday, 10:00 AM (in 4d 12h)                │
-  │ 🧠  Context Window: 31% full (80,433 / 258,400 tokens)   │
-  │      Chat: "Remove delays from browser hot paths"        │
-  │      177,967 headroom (69% left) • Last turn: 9:39 AM    │
+  │ 🧠  Context Window: 81% full (208,493 / 258,400 tokens)  │
+  │      Chat: "Pull GitHub project"                         │
+  │      49,907 headroom (19% left) • Updated: Today, 9:39 AM│
   ├──────────────────────────────────────────────────────────┤
   │ Synced: 2:15:40 PM (every 5s)                            │
   ├──────────────────────────────────────────────────────────┤
@@ -79,7 +79,6 @@
   │ ✓ Show Context Window % in Bar                           │
   │ Display Style                                          > │
   │ Refresh Interval                                       > │
-  │ ✓ 🛑 Auto-Pause Codex at 3% (Emergency Stop)            │
   │ 📋 Copy Current AI Handoff Prompt                        │
   │ ✓ Launch at Login                                        │
   ├──────────────────────────────────────────────────────────┤

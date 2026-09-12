@@ -688,9 +688,9 @@ class ContextWindowFetcher {
 
         return """
         ===============================================================
-        ⚠️ CODEX AI HANDOFF PROMPT (5H Limit Reached)
+        ⚠️ CODEX AI HANDOFF PROMPT (5H Limit Warning)
         ===============================================================
-        Context: Codex was paused because the 5-hour usage limit reached 3%.
+        Context: The Codex 5-hour usage limit is almost exhausted (<= 3% remaining).
         Use the prompt, plan, and work history below to seamlessly continue the task.
 
         [1. LAST PROMPT GIVEN TO CODEX]
@@ -699,11 +699,11 @@ class ContextWindowFetcher {
         [2. PLAN CODEX MADE FOR WORKING]
         \(planText)
 
-        [3. FULL WORK DONE TILL STOPPING]
+        [3. FULL WORK DONE SO FAR]
         \(workDoneText)
 
         [4. INSTRUCTIONS FOR CONTINUING AI]
-        Please pick up directly from where Codex stopped:
+        Please pick up directly from where Codex left off:
         1. Review the original prompt requirements and Codex's plan above.
         2. Check the workspace files, git status, and the last executed command result / failure.
         3. Continue implementing and verifying the remaining steps without repeating already-completed work.
@@ -722,7 +722,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let launchAgentIdentifier = "com.codexlimitbar.menubar"
 
     // Warning state tracking
-    // 5h: alert at 50%, 20%, 10% (red alert zone), and 3% (critical pause/stop threshold)
+    // 5h: alert at 50%, 20%, 10% (red alert zone), and 3% (critical alert)
     private var shown5hThresholds: Set<Int> = []
     private var shown3PercentAlert = false
     // Weekly: alert at 50%, 30%, and 10% (red alert zone)
@@ -731,15 +731,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var prev5hLeft: Int = 100
     private var prevWeeklyLeft: Int = 100
 
-    private var autoPauseAt3Percent: Bool {
-        get {
-            return UserDefaults.standard.object(forKey: "auto_pause_at_3_percent") == nil ? true : UserDefaults.standard.bool(forKey: "auto_pause_at_3_percent")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "auto_pause_at_3_percent")
-            buildMenu(loading: false)
-        }
-    }
 
     // User preferences
     private var currentInterval: TimeInterval {
@@ -843,7 +834,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fiveH = data.fiveHPercentLeft
         let weekly = data.weeklyPercentLeft
 
-        // --- 5h thresholds: popup at 50%, 20%, 10% (red alert zone), and 3% (critical emergency stop) ---
+        // --- 5h thresholds: popup at 50%, 20%, 10% (red alert zone), and 3% (critical alert) ---
         // Reset all shown thresholds when limit recovers above 55%
         if fiveH > 55 {
             shown5hThresholds.removeAll()
@@ -852,10 +843,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             shown3PercentAlert = false
         }
 
-        // CRITICAL 3% CHECK: Stop Codex from working and generate AI handoff prompt
+        // 3% CHECK: Warning popup on screen (non-intrusive, no action taken on Codex)
         if fiveH <= 3 && fiveH >= 1 && !shown3PercentAlert {
             shown3PercentAlert = true
-            triggerEmergencyStopAndHandoff(pctLeft: fiveH)
+            showWarningPopup(
+                category: "5-Hour",
+                pctLeft: fiveH,
+                threshold: 3,
+                severity: .critical
+            )
             prev5hLeft = fiveH
             prevWeeklyLeft = weekly
             return
@@ -916,77 +912,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch severity {
         case .critical:
             alert.messageText = "🔴 CodexLImitBar CRITICAL"
-            alert.informativeText = "\(category) limit is critically low!\n\nOnly \(pctLeft)% remaining (crossed \(threshold)% threshold).\n\n⚠️ Slow down or risk hitting the limit!"
+            if threshold == 3 {
+                alert.informativeText = "⚠️ 5-Hour limit has dropped to \(pctLeft)%!\n\nYour 5-hour Codex limit is almost finished. You can copy the AI handoff prompt below to continue in another AI if needed."
+                alert.addButton(withTitle: "Got it")
+                alert.addButton(withTitle: "Copy AI Handoff Prompt")
+            } else {
+                alert.informativeText = "\(category) limit is critically low!\n\nOnly \(pctLeft)% remaining (crossed \(threshold)% threshold).\n\n⚠️ Slow down or risk hitting the limit!"
+                alert.addButton(withTitle: "Got it")
+            }
             alert.alertStyle = .critical
         case .warning:
             alert.messageText = "⚠️ CodexLImitBar Warning"
             alert.informativeText = "\(category) limit is getting low.\n\n\(pctLeft)% remaining (crossed \(threshold)% threshold).\n\nConsider pacing your usage."
             alert.alertStyle = .warning
+            alert.addButton(withTitle: "Got it")
         case .info:
             alert.messageText = "ℹ️ CodexLImitBar Notice"
             alert.informativeText = "\(category) limit update: \(pctLeft)% remaining.\n\nCrossed the \(threshold)% threshold."
             alert.alertStyle = .informational
+            alert.addButton(withTitle: "Got it")
         }
-
-        alert.addButton(withTitle: "Got it")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
-    }
-
-    private func triggerEmergencyStopAndHandoff(pctLeft: Int) {
-        // 1. Pause active background workers (SIGSTOP) if auto-pause is enabled
-        if autoPauseAt3Percent {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            // Pause active trusted-worker processes and codex-code-mode-host
-            task.arguments = ["-STOP", "-f", "trusted-worker|codex-code-mode-host"]
-            try? task.run()
-            task.waitUntilExit()
-        }
-
-        // 2. Generate comprehensive handoff prompt from active session context
-        let handoffPrompt = ContextWindowFetcher.shared.generateHandoffPrompt()
-
-        // 3. Automatically copy handoff prompt to clipboard for immediate convenience
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(handoffPrompt, forType: .string)
-
-        // 4. Show modal alert with instructions and prompt preview
-        let alert = NSAlert()
-        alert.messageText = "🛑 Codex Stopped at \(pctLeft)% Limit!"
-        alert.alertStyle = .critical
-
-        let stopMsg = autoPauseAt3Percent
-            ? "Active Codex worker processes have been PAUSED (frozen) so your remaining limit is preserved.\n\n"
-            : "Your 5-hour limit has reached \(pctLeft)%!\n\n"
-
-        alert.informativeText = """
-        \(stopMsg)An AI Handoff Prompt has been automatically generated and COPIED TO YOUR CLIPBOARD!
-
-        You can paste it directly into Claude, Gemini, or ChatGPT to continue your work without starting over.
-
-        Choose 'Resume Codex' when your 5-hour window resets or when you're ready to proceed.
-        """
-
-        alert.addButton(withTitle: "Copy Prompt Again")
-        alert.addButton(withTitle: "Resume Codex (Unfreeze)")
-        alert.addButton(withTitle: "Dismiss & Wait")
 
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
-
-        switch response {
-        case .alertFirstButtonReturn: // Copy Prompt Again
-            pasteboard.clearContents()
-            pasteboard.setString(handoffPrompt, forType: .string)
-        case .alertSecondButtonReturn: // Resume Codex (SIGCONT)
-            let resumeTask = Process()
-            resumeTask.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-            resumeTask.arguments = ["-CONT", "-f", "trusted-worker|codex-code-mode-host"]
-            try? resumeTask.run()
-        default:
-            break
+        if threshold == 3 && response == .alertSecondButtonReturn {
+            copyHandoffPromptNow()
         }
     }
 
@@ -1247,12 +1197,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         intervalMenuItem.submenu = intervalSubmenu
         menu.addItem(intervalMenuItem)
 
-        // Toggle: Auto-Stop Codex at 3%
-        let autoStopItem = NSMenuItem(title: "🛑 Auto-Pause Codex at 3% (Emergency Stop)", action: #selector(toggleAutoPause), keyEquivalent: "")
-        autoStopItem.target = self
-        autoStopItem.state = autoPauseAt3Percent ? .on : .off
-        menu.addItem(autoStopItem)
-
         // Action: Copy AI Handoff Prompt Now
         let copyPromptItem = NSMenuItem(title: "📋 Copy Current AI Handoff Prompt", action: #selector(copyHandoffPromptNow), keyEquivalent: "")
         copyPromptItem.target = self
@@ -1281,10 +1225,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleContextDisplay() {
         showContextWindowInBar = !showContextWindowInBar
         buildMenu(loading: false)
-    }
-
-    @objc private func toggleAutoPause() {
-        autoPauseAt3Percent = !autoPauseAt3Percent
     }
 
     @objc private func copyHandoffPromptNow() {
