@@ -73,31 +73,32 @@ enum DisplayStyle: String, CaseIterable {
         switch self {
         case .standard: return "Standard (5HL=85% (4:30 PM)  We=90%  Ctx=30%)"
         case .compact:  return "Compact (5h: 85% (4:30 PM) | W: 90% | C: 30%)"
-        case .emoji:    return "Emoji (⏱ 85% (4:30 PM) | 📅 90% | 🧠 30%)"
+        case .emoji:    return "Emoji (⏱ 85% (4:30 PM) | ⏳ 90% | 🧠 30%)"
         case .minimal:  return "Minimal (85% (4:30 PM) / 90% / 30%)"
         }
     }
 
-    func format(fiveH: Int, weekly: Int, resetTime: String?, ctx: Int? = nil) -> String {
-        let p = formatParts(fiveH: fiveH, weekly: weekly, resetTime: resetTime, ctx: ctx)
+    func format(fiveH: Int, weekly: Int, resetTime: String?, weeklyReset: String? = nil, ctx: Int? = nil) -> String {
+        let p = formatParts(fiveH: fiveH, weekly: weekly, resetTime: resetTime, weeklyReset: weeklyReset, ctx: ctx)
         return "\(p.fiveHPart)\(p.separator1)\(p.weeklyPart)\(p.ctxPart)"
     }
 
-    func formatParts(fiveH: Int, weekly: Int, resetTime: String?, ctx: Int? = nil) -> (fiveHPart: String, separator1: String, weeklyPart: String, ctxPart: String) {
+    func formatParts(fiveH: Int, weekly: Int, resetTime: String?, weeklyReset: String? = nil, ctx: Int? = nil) -> (fiveHPart: String, separator1: String, weeklyPart: String, ctxPart: String) {
         let resetPart = (resetTime != nil && !resetTime!.isEmpty) ? " (\(resetTime!))" : ""
+        let weeklyResetPart = (weeklyReset != nil && !weeklyReset!.isEmpty) ? " (\(weeklyReset!))" : ""
         switch self {
         case .standard:
             let ctx = ctx != nil ? "  Ctx=\(ctx!)%" : ""
-            return ("5HL=\(fiveH)%\(resetPart)", "  ", "We=\(weekly)%", ctx)
+            return ("5HL=\(fiveH)%\(resetPart)", "  ", "We=\(weekly)%\(weeklyResetPart)", ctx)
         case .compact:
             let ctx = ctx != nil ? " | C: \(ctx!)%" : ""
-            return ("5h: \(fiveH)%\(resetPart)", " | ", "W: \(weekly)%", ctx)
+            return ("5h: \(fiveH)%\(resetPart)", " | ", "W: \(weekly)%\(weeklyResetPart)", ctx)
         case .emoji:
             let ctx = ctx != nil ? " | 🧠 \(ctx!)%" : ""
-            return ("⏱ \(fiveH)%\(resetPart)", " | ", "📅 \(weekly)%", ctx)
+            return ("⏱ \(fiveH)%\(resetPart)", " | ", "⏳ \(weekly)%\(weeklyResetPart)", ctx)
         case .minimal:
             let ctx = ctx != nil ? " / \(ctx!)%" : ""
-            return ("\(fiveH)%\(resetPart)", " / ", "\(weekly)%", ctx)
+            return ("\(fiveH)%\(resetPart)", " / ", "\(weekly)%\(weeklyResetPart)", ctx)
         }
     }
 }
@@ -765,6 +766,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var showWeeklyResetInBar: Bool {
+        get {
+            return UserDefaults.standard.bool(forKey: "show_weekly_reset_in_bar")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "show_weekly_reset_in_bar")
+            updateTitle()
+        }
+    }
+
     private var showContextWindowInBar: Bool {
         get {
             return UserDefaults.standard.object(forKey: "show_context_in_bar") == nil ? true : UserDefaults.standard.bool(forKey: "show_context_in_bar")
@@ -948,9 +959,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return formatter.string(from: date)
     }
 
+    private func formatShortResetDate(_ date: Date?) -> String? {
+        guard let date = date else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
+    }
+
     private func updateTitle() {
         guard let data = currentData, let button = statusItem.button else { return }
         let resetStr = showResetTimeInBar ? formatShortResetTime(data.fiveHResetAt) : nil
+        let weeklyResetStr = showWeeklyResetInBar ? formatShortResetDate(data.weeklyResetAt) : nil
         let ctxVal = showContextWindowInBar ? currentContextData?.percentFull : nil
 
         let fiveHDanger = data.fiveHPercentLeft >= 1 && data.fiveHPercentLeft <= 10
@@ -960,6 +979,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             fiveH: data.fiveHPercentLeft,
             weekly: data.weeklyPercentLeft,
             resetTime: resetStr,
+            weeklyReset: weeklyResetStr,
             ctx: ctxVal
         )
 
@@ -1090,7 +1110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(NSMenuItem.separator())
 
             // Weekly Window
-            let weeklyItem = NSMenuItem(title: "📅  Weekly Limit: \(data.weeklyPercentLeft)% left (\(Int(data.weeklyUsedPercent))% used)", action: nil, keyEquivalent: "")
+            let weeklyItem = NSMenuItem(title: "⏳  Weekly Limit: \(data.weeklyPercentLeft)% left (\(Int(data.weeklyUsedPercent))% used)", action: nil, keyEquivalent: "")
             menu.addItem(weeklyItem)
             let weeklyResetItem = NSMenuItem(title: "     Resets: \(formatResetDate(data.weeklyResetAt))", action: nil, keyEquivalent: "")
             weeklyResetItem.isEnabled = false
@@ -1159,6 +1179,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         toggleTimeItem.state = showResetTimeInBar ? .on : .off
         menu.addItem(toggleTimeItem)
 
+        // Toggle: Show Weekly Reset Date in Menu Bar
+        let toggleWeeklyResetItem = NSMenuItem(title: "Show Weekly Reset Date in Bar", action: #selector(toggleWeeklyResetDisplay), keyEquivalent: "")
+        toggleWeeklyResetItem.target = self
+        toggleWeeklyResetItem.state = showWeeklyResetInBar ? .on : .off
+        menu.addItem(toggleWeeklyResetItem)
+
         // Toggle: Show Context Window in Menu Bar
         let toggleCtxItem = NSMenuItem(title: "Show Context Window % in Bar", action: #selector(toggleContextDisplay), keyEquivalent: "")
         toggleCtxItem.target = self
@@ -1219,6 +1245,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleResetTimeDisplay() {
         showResetTimeInBar = !showResetTimeInBar
+        buildMenu(loading: false)
+    }
+
+    @objc private func toggleWeeklyResetDisplay() {
+        showWeeklyResetInBar = !showWeeklyResetInBar
         buildMenu(loading: false)
     }
 
