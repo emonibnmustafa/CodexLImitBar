@@ -768,7 +768,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var showWeeklyResetInBar: Bool {
         get {
-            return UserDefaults.standard.bool(forKey: "show_weekly_reset_in_bar")
+            return UserDefaults.standard.object(forKey: "show_weekly_reset_in_bar") == nil ? true : UserDefaults.standard.bool(forKey: "show_weekly_reset_in_bar")
         }
         set {
             UserDefaults.standard.set(newValue, forKey: "show_weekly_reset_in_bar")
@@ -961,9 +961,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func formatShortResetDate(_ date: Date?) -> String? {
         guard let date = date else { return nil }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d"
-        return formatter.string(from: date)
+        let cal = Calendar.current
+        if cal.isDateInToday(date) {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            formatter.dateStyle = .none
+            return formatter.string(from: date)
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "MMM d"
+            return formatter.string(from: date)
+        }
     }
 
     private func updateTitle() {
